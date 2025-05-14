@@ -19,8 +19,8 @@ class TextItem:
     flags: int
     page_num: int
     block_num: int
-    line_num: int
-    span_num: int
+    line_num: int  # Original line number within block from PyMuPDF
+    span_num: int  # Original span number within line from PyMuPDF
 
     @property
     def width(self) -> float:
@@ -28,6 +28,7 @@ class TextItem:
 
     @property
     def is_bold(self) -> bool:
+        # Flag bit 4 indicates bold
         return bool(self.flags & (1 << 4))
 
     def __repr__(self):
@@ -52,7 +53,7 @@ COMMON_SECTION_KEYWORDS = {
         "personal summary",
         "professional profile",
     ],
-    "contact": ["contact", "contact information"],  # Often part of profile
+    "contact": ["contact", "contact information"],
     "education": [
         "education",
         "academic background",
@@ -133,16 +134,15 @@ COMMON_SECTION_KEYWORDS = {
         "leadership roles",
         "leadership",
     ],
-    # Add more keywords as you discover them from various resumes
 }
 
 
 # --- Step 1: Read text items from a PDF file (Enhanced) ---
 def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
     text_items: List[TextItem] = []
-    total_spans_processed = 0
-    spans_where_text_key_was_usable = 0
-    spans_reconstructed_from_chars = 0
+    # total_spans_processed = 0 # Uncomment for debug
+    # spans_where_text_key_was_usable = 0 # Uncomment for debug
+    # spans_reconstructed_from_chars = 0 # Uncomment for debug
 
     try:
         pdf_file_stream.seek(0)
@@ -152,11 +152,10 @@ def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
             page_dict = page.get_text("rawdict", sort=True)
 
             for block_idx, block in enumerate(page_dict.get("blocks", [])):
-                for line_idx_in_block, line_data in enumerate(
-                    block.get("lines", [])
-                ):  # Renamed to avoid clash
+                block_num_val = block.get("number", block_idx)
+                for line_idx_in_block, line_data in enumerate(block.get("lines", [])):
                     for span_idx, span in enumerate(line_data.get("spans", [])):
-                        total_spans_processed += 1
+                        # total_spans_processed += 1 # Uncomment for debug
                         current_span_text_content = None
 
                         raw_text_from_text_key = span.get("text")
@@ -164,7 +163,7 @@ def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
                             stripped_text_from_key = raw_text_from_text_key.strip()
                             if stripped_text_from_key:
                                 current_span_text_content = stripped_text_from_key
-                                spans_where_text_key_was_usable += 1
+                                # spans_where_text_key_was_usable += 1 # Uncomment for debug
 
                         if (
                             current_span_text_content is None
@@ -186,7 +185,7 @@ def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
                                     current_span_text_content = (
                                         stripped_reconstructed_text
                                     )
-                                    spans_reconstructed_from_chars += 1
+                                    # spans_reconstructed_from_chars += 1 # Uncomment for debug
                             except Exception as e_char:
                                 print(
                                     f"WARNING: Error reconstructing text from chars: {e_char}. Span BBox: {span.get('bbox')}"
@@ -204,17 +203,11 @@ def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
                                     font_name=span.get("font", ""),
                                     flags=span.get("flags", 0),
                                     page_num=page_num,
-                                    block_num=block.get("number", block_idx),
-                                    line_num=line_idx_in_block,  # Using simple line_idx_in_block
+                                    block_num=block_num_val,
+                                    line_num=line_idx_in_block,
                                     span_num=span_idx,
                                 )
                             )
-        # print(f"DEBUG: Total spans processed: {total_spans_processed}")
-        # print(f"DEBUG: Spans where 'text' key was usable: {spans_where_text_key_was_usable}")
-        # print(f"DEBUG: Spans where text was reconstructed from 'chars': {spans_reconstructed_from_chars}")
-        # print(f"DEBUG: Extracted {len(text_items)} non-empty rich text items after all checks.")
-        # for item_idx, item_val in enumerate(text_items[:10]):
-        # print(f"DEBUG Item {item_idx}: {item_val}")
         return text_items
     except Exception as e:
         print(f"CRITICAL Error in extract_rich_text_items: {e}")
@@ -257,75 +250,38 @@ def group_text_items_into_lines(
 
     if current_line_items:
         lines.append(sorted(current_line_items, key=lambda it: it.x0))
-
-    # --- Optional: Debug print for formed lines ---
-    # print(f"\nDEBUG GRP_LINES: Total lines formed: {len(lines)}")
-    # for i, line_obj in enumerate(lines[:30]): # Print first 30 lines
-    #     line_content_str = " | ".join([f"'{item.text}'(b:{item.is_bold}, p:{item.page_num}, y0:{item.y0:.0f})" for item in line_obj])
-    #     first_item_y0 = line_obj[0].y0 if line_obj else "N/A"
-    #     first_item_page = line_obj[0].page_num if line_obj else "N/A"
-    #     print(f"DEBUG GRP_LINES Line {i} (Page {first_item_page}, y0~{first_item_y0}): {line_content_str}")
     return lines
 
 
 # --- Step 3: Group lines into sections ---
-# In app/services/resume_segmenter.py
 def is_section_title_heuristic(line_items: Line) -> bool:
     if not line_items:
-        # print("DEBUG HEURISTIC: Empty line_items")
         return False
-
-    # --- Add specific debug prints for the target header ---
-    # combined_text_for_debug_check = " ".join(item.text for item in line_items).strip().lower()
-    # if "work and research experience" in combined_text_for_debug_check:
-    #     print(f"\nDEBUG HEURISTIC TRACE for line: '{' '.join(item.text for item in line_items)}'")
-    #     print(f"  Number of items on line: {len(line_items)}")
-    #     for idx, item_debug in enumerate(line_items):
-    #         print(f"  Item {idx}: text='{item_debug.text}', is_bold={item_debug.is_bold}, font_size={item_debug.font_size:.1f}")
-    # --- End specific debug ---
-
-    # Allow 1 to 4 items for a potential section header line
     if not (1 <= len(line_items) <= 4):
-        # if is_target_header: print(f"  Failed: Item count ({len(line_items)}) not between 1 and 4.")
+        return False
+    if not all(item.is_bold for item in line_items):
         return False
 
-    # All items forming the potential header should ideally be bold
-    all_items_are_bold = all(item.is_bold for item in line_items)
-    if not all_items_are_bold:
-        # if is_target_header: print(f"  Failed: Not all items are bold. Bolds: {[item.is_bold for item in line_items]}")
+    combined_text_content = " ".join(item.text for item in line_items).strip()
+    if not combined_text_content or not any(c.isalpha() for c in combined_text_content):
         return False
-
-    # Concatenate text from all items to check overall style
-    text_content = " ".join(item.text for item in line_items).strip()
-
-    if not text_content or not any(c.isalpha() for c in text_content):
-        # if is_target_header: print(f"  Failed: No alpha text in '{text_content}'")
-        return False
-
-    if ":" in text_content:
-        parts = text_content.split(":", 1)
+    if ":" in combined_text_content:
+        parts = combined_text_content.split(":", 1)
         if len(parts) > 1 and parts[1].strip():
-            # if is_target_header: print(f"  Failed: Colon with details check for '{text_content}'")
             return False
 
-    is_all_caps = text_content.isupper() and len(text_content) > 1
-    is_title_cased = text_content.istitle()
-    num_words = len(text_content.split())
+    is_all_caps = combined_text_content.isupper() and len(combined_text_content) > 1
+    is_title_cased = combined_text_content.istitle()
+    num_words = len(combined_text_content.split())
     is_plausible_title_case_header = is_title_cased and (
         num_words > 0 and num_words <= 5
-    )  # Max 5 words for title case
-
-    # if is_target_header:
-    #     print(f"  Combined text: '{text_content}'")
-    #     print(f"  is_all_caps: {is_all_caps}")
-    #     print(f"  is_title_cased: {is_title_cased}")
-    #     print(f"  num_words: {num_words}")
-    #     print(f"  is_plausible_title_case_header: {is_plausible_title_case_header}")
+    )
 
     if is_all_caps or is_plausible_title_case_header:
-        len_no_space = len(text_content.replace(" ", ""))
-        passes_length_check = 2 <= len_no_space <= 50
-        passes_exclusion_check = text_content.upper() not in [
+        len_no_space = len(combined_text_content.replace(" ", ""))
+        if not (2 <= len_no_space <= 50):
+            return False
+        if combined_text_content.upper() in [
             "GPA",
             "USA",
             "MS",
@@ -335,57 +291,40 @@ def is_section_title_heuristic(line_items: Line) -> bool:
             "DOB",
             "ID",
             "NO",
-        ]
-
-        # if is_target_header:
-        #     print(f"  case_ok (all_caps or plausible_title_case): {is_all_caps or is_plausible_title_case_header}")
-        #     print(f"  passes_length_check ({len_no_space}): {passes_length_check}")
-        #     print(f"  passes_exclusion_check: {passes_exclusion_check}")
-
-        if passes_length_check and passes_exclusion_check:
-            # if is_target_header: print("  PASSED HEURISTIC!")
-            return True
-
-    # if is_target_header: print("  FAILED HEURISTIC (final style/content checks)")
+        ]:
+            return False
+        return True
     return False
 
 
 def find_section_by_keyword(line_text: str) -> Optional[str]:
     normalized_text = line_text.lower().strip()
-    # Check for exact matches first or near matches
     for section_category, keywords in COMMON_SECTION_KEYWORDS.items():
         for keyword in keywords:
-            if normalized_text == keyword:  # Exact match
+            if normalized_text == keyword:
                 return section_category
-            # Check if the line text IS the keyword, ignoring case and spaces for robustness
             if normalized_text.replace(" ", "") == keyword.replace(" ", ""):
                 return section_category
-    # Then check for startswith (more prone to false positives if not careful)
     for section_category, keywords in COMMON_SECTION_KEYWORDS.items():
         for keyword in keywords:
-            if normalized_text.startswith(keyword):
-                # Add a length check to avoid matching long sentences that happen to start with a keyword
-                if (
-                    len(normalized_text) <= len(keyword) + 20
-                ):  # Allow some reasonable extra characters
+            if (
+                len(keyword) < 4
+                and normalized_text.startswith(keyword)
+                and normalized_text == keyword
+            ):
+                return section_category
+            elif len(keyword) >= 4 and normalized_text.startswith(keyword):
+                if len(normalized_text) <= len(keyword) + 25:
                     return section_category
     return None
 
 
-# app/services/resume_segmenter.py
-
-# ... (keep TextItem, Line, Lines, ResumeSectionToLines, COMMON_SECTION_KEYWORDS,
-#      extract_rich_text_items, group_text_items_into_lines, is_section_title_heuristic,
-#      find_section_by_keyword, convert_section_lines_to_text, segment_resume) ...
-
-
 def group_lines_into_sections(lines: Lines) -> ResumeSectionToLines:
     sections: ResumeSectionToLines = {}
-    current_section_title_key = "profile"  # Start with a default section
+    current_section_title_key = "profile"
     current_section_lines: Lines = []
 
     if not lines:
-        # print("DEBUG SECTIONER: No lines to process for section grouping.")
         return {}
 
     for line_idx, line_items in enumerate(lines):
@@ -394,103 +333,86 @@ def group_lines_into_sections(lines: Lines) -> ResumeSectionToLines:
 
         line_text_concatenated = " ".join(item.text for item in line_items).strip()
         # ---- Optional: Uncomment for detailed line-by-line processing debug ----
-        # print(f"\nDEBUG SECTIONER: Processing Line {line_idx} (p:{line_items[0].page_num} y0~{line_items[0].y0:.0f}): '{line_text_concatenated}'")
+        # print(f"\nDEBUG SECTIONER Line {line_idx} (p{line_items[0].page_num} y{line_items[0].y0:.0f}): '{line_text_concatenated}' | Current: '{current_section_title_key}'")
 
-        is_stylistic_title_line = is_section_title_heuristic(line_items)
-        # print(f"DEBUG SECTIONER: Is Stylistic Title? {is_stylistic_title_line} for line '{line_text_concatenated}'.")
+        is_stylistic_title = is_section_title_heuristic(line_items)
+        # if is_stylistic_title: print(f"  Line '{line_text_concatenated}' IS a stylistic title.")
+        # else: print(f"  Line '{line_text_concatenated}' is NOT a stylistic title.")
 
-        new_main_section_category: Optional[str] = None
-        # Use text of the first item for keyword matching if it's a stylistic title, otherwise whole line
-        # This assumes if is_stylistic_title_line is True, line_items[0] is the relevant title text.
-        title_text_to_check_keywords = (
+        title_text_for_keyword_check = (
             line_items[0].text.strip()
-            if is_stylistic_title_line and line_items
+            if is_stylistic_title and line_items
             else line_text_concatenated
         )
 
-        if is_stylistic_title_line:
-            category_from_main_keywords = find_section_by_keyword(
-                title_text_to_check_keywords
+        # This variable will hold the category if this line IS a new main section.
+        # If it remains None, the line is treated as content for the current section.
+        identified_new_main_section_category: Optional[str] = None
+
+        if is_stylistic_title:
+            category_from_keywords_for_stylistic_title = find_section_by_keyword(
+                title_text_for_keyword_check
             )
 
-            if category_from_main_keywords:
-                # It's a stylistic title AND its text matches a known MAIN section keyword.
-                # Check if we are in a section like "projects" or "experience" and this match is for a DIFFERENT category.
-                # This handles cases like "Research Paper Parser" (stylistic title) matching "research" (for "publications")
-                # when we are already in the "projects" section.
-                if current_section_title_key in [
-                    "projects",
-                    "experience",
-                ] and category_from_main_keywords not in [
-                    "projects",
-                    "experience",
-                ]:  # Or the specific keyword that defines the current section
-                    # print(f"DEBUG SECTIONER: Stylistic Title '{title_text_to_check_keywords}' (matched keyword for '{category_from_main_keywords}') found within '{current_section_title_key}'. Treating as content.")
-                    new_main_section_category = (
-                        None  # Do NOT start a new main section; it's a sub-item.
+            if category_from_keywords_for_stylistic_title:
+                # This stylistic title's text matches a known MAIN section keyword.
+                # This is a strong candidate for a new main section, UNLESS it's a suppressed subheading.
+
+                # Suppression condition:
+                # If current section is one that expects subheadings (e.g., "projects", "experience")
+                # AND the stylistic title's keyword maps to a DIFFERENT main category
+                # AND that different category is NOT "profile" (profile can usually break any section)
+                is_suppressed_subheading = (
+                    current_section_title_key in ["projects", "experience"]
+                    and category_from_keywords_for_stylistic_title
+                    != current_section_title_key
+                    and category_from_keywords_for_stylistic_title != "profile"
+                )
+
+                if not is_suppressed_subheading:
+                    identified_new_main_section_category = (
+                        category_from_keywords_for_stylistic_title
                     )
-                else:
-                    # It's a true new main section based on style and keyword.
-                    new_main_section_category = category_from_main_keywords
-                    # print(f"DEBUG SECTIONER: Style & Keyword Match (MAIN SECTION): '{title_text_to_check_keywords}' -> New Main Section Category: '{new_main_section_category}'")
-                # else:
-                # It's a stylistic title (e.g., bold, single item, no colon detail)
-                # but its text does NOT match any known main section keyword.
-                # e.g., "My Awesome Project Title" (no keywords).
-                # If we are in "projects" or "experience", this is likely a sub-item.
-                # if current_section_title_key in ["projects", "experience"]:
-                #     print(f"DEBUG SECTIONER: Stylistic Title '{title_text_to_check_keywords}' (no main keyword match) found within '{current_section_title_key}'. Treating as content.")
-                #     new_main_section_category = None # Treat as content
-                # else:
-                #     # If not in projects/experience, it might be a custom section header.
-                #     # For now, we are stricter: if it's not a known main keyword, it won't start a new section here.
-                #     print(f"DEBUG SECTIONER: Stylistic Title '{title_text_to_check_keywords}' (no main keyword match), not in projects/exp. Treating as content for '{current_section_title_key}'.")
-                pass  # new_main_section_category remains None, so it's treated as content.
+                # else: # It IS a suppressed subheading (e.g. "Research Paper Parser" in "Projects")
+                # print(f"    Stylistic title '{title_text_for_keyword_check}' suppressed as subheading in '{current_section_title_key}'.")
+                # identified_new_main_section_category remains None, so it's treated as content.
+                # else: # Stylistic title, but its text does NOT match any main section keyword (e.g. "Chatty: A Chat Application")
+                # This is treated as content for the current section.
+                # print(f"    Stylistic title '{title_text_for_keyword_check}' - no main keyword match. Treating as content.")
+                # identified_new_main_section_category remains None.
+                pass  # Explicitly do nothing, it's content
 
-        # Fallback: If not identified as a new main section yet (either not stylistic, or stylistic but decided to be content),
-        # check if the whole concatenated line text IS a known main section keyword.
-        # This catches headers that might not pass strict style checks but are clear by keyword.
-        if not new_main_section_category:
-            # Be somewhat restrictive for this fallback to avoid misclassifying content lines.
+        # Fallback: Only if NOT a stylistic title (or if stylistic but decided to be content because no keyword match or suppressed)
+        if not identified_new_main_section_category:
             if (
-                len(line_items) <= 4 and len(line_text_concatenated) < 60
-            ):  # Example: "Awards and Honors"
-                category_from_fallback = find_section_by_keyword(line_text_concatenated)
-                if category_from_fallback:
-                    new_main_section_category = category_from_fallback
-                    # print(f"DEBUG SECTIONER: Fallback Keyword Matched (MAIN SECTION): '{line_text_concatenated}' -> New Main Section Category: '{new_main_section_category}'")
+                not is_stylistic_title
+            ):  # IMPORTANT: Only apply fallback if the line wasn't already processed as a stylistic title
+                if len(line_items) <= 4 and len(line_text_concatenated) < 70:
+                    category_from_fallback = find_section_by_keyword(
+                        line_text_concatenated
+                    )
+                    if category_from_fallback:
+                        identified_new_main_section_category = category_from_fallback
+                        # print(f"    Fallback keyword match for '{line_text_concatenated}' -> {identified_new_main_section_category}")
 
-        # Decision point: Change section or append line
+        # Decision to change section
         if (
-            new_main_section_category
-            and new_main_section_category != current_section_title_key
+            identified_new_main_section_category
+            and identified_new_main_section_category != current_section_title_key
         ):
-            # print(f"DEBUG SECTIONER: New MAIN section identified! Old: '{current_section_title_key}', New: '{new_main_section_category}'. Saving {len(current_section_lines)} lines to '{current_section_title_key}'.")
-            if current_section_lines:  # Save previous section's content
-                if current_section_title_key not in sections:
-                    sections[current_section_title_key] = []
-                sections[current_section_title_key].extend(current_section_lines)
-
-            current_section_title_key = (
-                new_main_section_category  # Switch to new section
-            )
-            current_section_lines = []  # Reset lines for the new section
-        else:
-            # This line is content for the current_section_title_key
+            # print(f"  *** Changing Section from '{current_section_title_key}' to '{identified_new_main_section_category}'. Saving {len(current_section_lines)} lines. ***")
+            if current_section_lines:
+                sections.setdefault(current_section_title_key, []).extend(
+                    current_section_lines
+                )
+            current_section_title_key = identified_new_main_section_category
+            current_section_lines = []
+        else:  # Line is content for the current section
             current_section_lines.append(line_items)
-            # if new_main_section_category is None and is_stylistic_title_line:
-            #     print(f"DEBUG SECTIONER: Appending stylistic non-main title '{title_text_to_check_keywords}' as content to '{current_section_title_key}'")
-            # else:
-            #     print(f"DEBUG SECTIONER: Appending line as content to '{current_section_title_key}': '{line_text_concatenated}'")
 
-    # Add the last collected section after the loop
-    if current_section_lines:
-        # print(f"DEBUG SECTIONER: Finalizing. Adding {len(current_section_lines)} lines to last section '{current_section_title_key}'.")
-        if current_section_title_key not in sections:
-            sections[current_section_title_key] = []
-        sections[current_section_title_key].extend(current_section_lines)
+    if current_section_lines:  # Add last section
+        sections.setdefault(current_section_title_key, []).extend(current_section_lines)
 
-    # print(f"DEBUG SECTIONER: Returning sections. Keys: {list(sections.keys())}")
     return sections
 
 
@@ -513,9 +435,3 @@ def segment_resume(
         return {}, text_items, []
     sections = group_lines_into_sections(lines)
     return sections if sections else {}, text_items, lines
-
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # ... (keep example usage for direct testing)
-    pass
