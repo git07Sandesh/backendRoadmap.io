@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 from .routers import resume as resume_router  # Corrected import
+from app.routers import linkedin 
+from fastapi.middleware.cors import CORSMiddleware
+
 from .config import (
     settings,
 )  # Import settings to ensure it's loaded, though not directly used here often
@@ -9,9 +12,21 @@ app = FastAPI(title="Resume Parser API")
 # Include routers
 app.include_router(resume_router.router, prefix="/resume", tags=["resume"])
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routes
+app.include_router(linkedin.router, prefix="/linkedin", tags=["LinkedIn"])
+
 
 @app.get("/")
 async def root():
+    
     return {
         "message": "Welcome to the Resume Parser API. Go to /docs for API documentation."
     }
