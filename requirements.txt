@@ -3,5 +3,6 @@ uvicorn[standard]
 supabase
 PyMuPDF
 python-docx
-spacy
-python-multipart
+nltk # For NLP tasks
+python-multipart # For FastAPI file uploads
+pydantic-settings # For settings management in config.py
