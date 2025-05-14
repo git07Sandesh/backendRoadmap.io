@@ -104,11 +104,15 @@ def clean_text(text: str) -> str:
     return text
 
 
-# --- Main processing function ---
+# app/services/resume_parser.py
+# ... (imports and other functions remain the same) ...
+
+
 async def process_resume_file_to_log(
     file_stream: io.BytesIO,
     filename: str,
 ) -> ExtractionLog:
+    # ... (initial variable declarations, file reading, basic text extraction - same as response #21) ...
     raw_full_text_content = ""
     raw_text_pages_list: Optional[List[str]] = None
     file_type_processed = ""
@@ -117,7 +121,7 @@ async def process_resume_file_to_log(
     cleaned_full_resume_text = ""
     character_count_cleaned = 0
     word_count_cleaned = 0
-    final_segmented_output_for_log: Optional[Dict[str, str]] = None
+    dynamic_segmented_output: Optional[Dict[str, str]] = None
 
     try:
         original_file_content = file_stream.read()
@@ -164,40 +168,37 @@ async def process_resume_file_to_log(
             word_count_cleaned = len(words)
             extraction_status = "success"
         except LookupError as nltk_le:
-            error_message_log = f"NLTK resource error during tokenization: {str(nltk_le)}. Basic text extracted but word count failed."
+            error_message_log = (
+                f"NLTK resource error: {str(nltk_le)}. Word count failed."
+            )
             extraction_status = "partial_success"
         except Exception as tokenize_e:
-            error_message_log = f"Error during text tokenization: {str(tokenize_e)}. Basic text extracted but word count failed."
+            error_message_log = (
+                f"Tokenization error: {str(tokenize_e)}. Word count failed."
+            )
             extraction_status = "partial_success"
 
         if file_type_processed == "pdf":
             segmenter_stream = io.BytesIO(original_file_content)
             try:
-                # segment_resume returns (sections_dict, all_text_items_list, all_lines_list)
                 rich_sections, _, _ = resume_segmenter.segment_resume(segmenter_stream)
+                # print(f"DEBUG PARSER: Keys from segmenter: {list(rich_sections.keys()) if rich_sections else 'None/Empty'}")
 
-                # Check if rich_sections is not None AND not an empty dictionary
-                if rich_sections:  # An empty dict {} is falsy in Python boolean context
-                    final_segmented_output_for_log = {}
+                if rich_sections:
+                    dynamic_segmented_output = {}
                     for title, lines_of_text_items in rich_sections.items():
                         section_text = resume_segmenter.convert_section_lines_to_text(
                             lines_of_text_items
                         )
-                        final_segmented_output_for_log[title] = section_text
+                        dynamic_segmented_output[title] = section_text
 
-                    if (
-                        extraction_status != "failure"
-                    ):  # Don't upgrade from total failure
-                        extraction_status = "success"  # Segmentation was successful
-
+                    if extraction_status != "failure":
+                        extraction_status = "success"
                     if error_message_log and "NLTK" in error_message_log:
                         error_message_log += " Advanced segmentation also succeeded."
-                    # If no NLTK error and segmentation worked, error_message_log might be None or an earlier success message.
-                    # Let's clear it only if it was None before and segmentation is the primary success.
                     elif not error_message_log and extraction_status == "success":
-                        error_message_log = None  # No errors at all
+                        error_message_log = None
                 else:
-                    # Segmentation yielded no sections (empty dict or None)
                     if extraction_status == "success":
                         extraction_status = "partial_success"
                     current_error = "PDF processed for basic text, but advanced segmentation yielded no sections."
@@ -216,10 +217,8 @@ async def process_resume_file_to_log(
                     error_message_log += f" {seg_fail_msg}"
             finally:
                 segmenter_stream.close()
-        elif (
-            extraction_status == "success" and not error_message_log
-        ):  # Non-PDFs successfully processed
-            pass  # Status is already success, no error.
+        elif extraction_status == "success" and not error_message_log:
+            pass
 
     except ValueError as ve:
         if not error_message_log:
@@ -233,13 +232,201 @@ async def process_resume_file_to_log(
 
         traceback.print_exc()
 
-    log_segments = final_segmented_output_for_log
+    # --- Map dynamic_segmented_output to the fixed SegmentedSections Pydantic model ---
+    mapped_model_data = {
+        "contact_info_text": None,
+        "summary_text": None,
+        "experience_text": None,
+        "education_text": None,
+        "skills_text": None,
+        "projects_text": None,
+        "awards_text": None,
+        "publications_text": None,
+        "certifications_text": None,
+        "volunteer_experience_text": None,
+        "positions_of_responsibility_text": None,
+        "languages_text": None,
+        # Ensure this matches ALL fields in your SegmentedSections Pydantic model
+    }
 
-    # Ensure word_count_cleaned is 0 if NLTK error occurred for clarity in log
+    if dynamic_segmented_output:
+        normalized_segmenter_output = {
+            key.lower().replace("_", " ").strip(): text
+            for key, text in dynamic_segmented_output.items()
+        }
+
+        # Explicitly define your target Pydantic model field names here for clarity
+        pydantic_contact = "contact_info_text"
+        pydantic_summary = "summary_text"
+        pydantic_experience = "experience_text"
+        pydantic_education = "education_text"
+        pydantic_skills = "skills_text"
+        pydantic_projects = "projects_text"
+        pydantic_awards = "awards_text"
+        pydantic_publications = "publications_text"
+        pydantic_certs = "certifications_text"
+        pydantic_volunteer = "volunteer_experience_text"
+        pydantic_positions = "positions_of_responsibility_text"
+        pydantic_languages = "languages_text"
+
+        # More flexible mapping: iterate through segmenter keys and see if they indicate a target field
+        for seg_key_norm, seg_text in normalized_segmenter_output.items():
+            mapped_to_field = False
+            if seg_key_norm == "profile" or seg_key_norm == "contact":
+                mapped_model_data[pydantic_contact] = (
+                    mapped_model_data[pydantic_contact] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_contact]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if seg_key_norm == "summary" or seg_key_norm == "objective":
+                mapped_model_data[pydantic_summary] = (
+                    mapped_model_data[pydantic_summary] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_summary]
+                    else seg_text
+                )
+                mapped_to_field = True
+
+            # User's request: "if experience is there then just put it under experience text"
+            # This means if any segmenter key *contains* "experience"
+            if (
+                "experience" in seg_key_norm
+            ):  # Check if "experience" is a substring of the segmenter's key
+                mapped_model_data[pydantic_experience] = (
+                    mapped_model_data[pydantic_experience] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_experience]
+                    else seg_text
+                )
+                mapped_to_field = True
+            # Also handle exact matches from COMMON_SECTION_KEYWORDS that map to experience
+            elif seg_key_norm in [
+                "work experience",
+                "employment history",
+                "professional experience",
+                "career summary",
+                "work history",
+                "relevant experience",
+                "professional background",
+                "career history",
+                "internship",
+                "internships",
+                "work and research experience",
+            ]:
+                mapped_model_data[pydantic_experience] = (
+                    mapped_model_data[pydantic_experience] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_experience]
+                    else seg_text
+                )
+                mapped_to_field = True
+
+            if seg_key_norm == "education" or "academic" in seg_key_norm:
+                mapped_model_data[pydantic_education] = (
+                    mapped_model_data[pydantic_education] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_education]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "skill" in seg_key_norm
+                or "proficienc" in seg_key_norm
+                or "expertise" in seg_key_norm
+            ):  # Catches "skills", "technical skills", etc.
+                mapped_model_data[pydantic_skills] = (
+                    mapped_model_data[pydantic_skills] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_skills]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "project" in seg_key_norm
+            ):  # Catches "projects", "personal projects", etc.
+                mapped_model_data[pydantic_projects] = (
+                    mapped_model_data[pydantic_projects] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_projects]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "award" in seg_key_norm
+                or "honor" in seg_key_norm
+                or "achievement" in seg_key_norm
+            ):
+                mapped_model_data[pydantic_awards] = (
+                    mapped_model_data[pydantic_awards] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_awards]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "publication" in seg_key_norm or "research" in seg_key_norm
+            ):  # Catches "publications", "research paper parser" if it was categorized as 'publications'
+                mapped_model_data[pydantic_publications] = (
+                    mapped_model_data[pydantic_publications] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_publications]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "certification" in seg_key_norm
+                or "license" in seg_key_norm
+                or "credential" in seg_key_norm
+            ):
+                mapped_model_data[pydantic_certs] = (
+                    mapped_model_data[pydantic_certs] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_certs]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if "volunteer" in seg_key_norm or "community" in seg_key_norm:
+                mapped_model_data[pydantic_volunteer] = (
+                    mapped_model_data[pydantic_volunteer] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_volunteer]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if (
+                "positions of responsibility" in seg_key_norm
+                or "leadership" in seg_key_norm
+                or "activit" in seg_key_norm
+            ):  # "activit" for "activities"
+                mapped_model_data[pydantic_positions] = (
+                    mapped_model_data[pydantic_positions] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_positions]
+                    else seg_text
+                )
+                mapped_to_field = True
+            if "language" in seg_key_norm:
+                mapped_model_data[pydantic_languages] = (
+                    mapped_model_data[pydantic_languages] + f"\n\n---\n\n{seg_text}"
+                    if mapped_model_data[pydantic_languages]
+                    else seg_text
+                )
+                mapped_to_field = True
+
+            # if not mapped_to_field:
+            #     print(f"INFO: Unmapped section from segmenter: '{seg_key_norm}' with content preview: '{seg_text[:50]}...'")
+
+    log_segments_object = None
+    try:
+        log_segments_object = SegmentedSections(**mapped_model_data)
+    except Exception as pydantic_e:
+        print(
+            f"Error instantiating SegmentedSections Pydantic model: {pydantic_e}. Data was: {mapped_model_data}"
+        )
+        log_segments_object = SegmentedSections()
+        current_error_msg = "Error structuring segmented data for log."
+        if not error_message_log:
+            error_message_log = current_error_msg
+        else:
+            error_message_log += f" {current_error_msg}"
+        if extraction_status != "failure":
+            extraction_status = "partial_success"
+
     if error_message_log and "NLTK resource error" in error_message_log:
         word_count_cleaned = 0
 
     return ExtractionLog(
+        # ... (rest of fields are the same)
         resume_filename=filename,
         extraction_timestamp=datetime.datetime.now(datetime.timezone.utc),
         file_type_processed=file_type_processed if file_type_processed else "unknown",
@@ -251,11 +438,11 @@ async def process_resume_file_to_log(
             if file_type_processed == "pdf" and raw_text_pages_list
             else None
         ),
-        segmented_sections=log_segments,
+        segmented_sections=log_segments_object,
         extraction_status=extraction_status,
         error_message=error_message_log,
         character_count_cleaned=(
             character_count_cleaned if extraction_status != "failure" else 0
         ),
-        word_count_cleaned=word_count_cleaned,  # Already adjusted above
+        word_count_cleaned=word_count_cleaned,
     )
