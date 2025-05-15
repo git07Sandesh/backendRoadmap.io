@@ -105,7 +105,7 @@ COMMON_SECTION_KEYWORDS = {
     ],
     "publications": [
         "publications",
-        "research",
+        "research papers",
         "articles",
         "conference papers",
         "research and publications",
@@ -140,31 +140,22 @@ COMMON_SECTION_KEYWORDS = {
 # --- Step 1: Read text items from a PDF file (Enhanced) ---
 def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
     text_items: List[TextItem] = []
-    # total_spans_processed = 0 # Uncomment for debug
-    # spans_where_text_key_was_usable = 0 # Uncomment for debug
-    # spans_reconstructed_from_chars = 0 # Uncomment for debug
-
     try:
         pdf_file_stream.seek(0)
         doc = fitz.open(stream=pdf_file_stream, filetype="pdf")
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             page_dict = page.get_text("rawdict", sort=True)
-
             for block_idx, block in enumerate(page_dict.get("blocks", [])):
                 block_num_val = block.get("number", block_idx)
                 for line_idx_in_block, line_data in enumerate(block.get("lines", [])):
                     for span_idx, span in enumerate(line_data.get("spans", [])):
-                        # total_spans_processed += 1 # Uncomment for debug
                         current_span_text_content = None
-
                         raw_text_from_text_key = span.get("text")
                         if isinstance(raw_text_from_text_key, str):
                             stripped_text_from_key = raw_text_from_text_key.strip()
                             if stripped_text_from_key:
                                 current_span_text_content = stripped_text_from_key
-                                # spans_where_text_key_was_usable += 1 # Uncomment for debug
-
                         if (
                             current_span_text_content is None
                             and "chars" in span
@@ -185,12 +176,10 @@ def extract_rich_text_items(pdf_file_stream: io.BytesIO) -> List[TextItem]:
                                     current_span_text_content = (
                                         stripped_reconstructed_text
                                     )
-                                    # spans_reconstructed_from_chars += 1 # Uncomment for debug
                             except Exception as e_char:
                                 print(
                                     f"WARNING: Error reconstructing text from chars: {e_char}. Span BBox: {span.get('bbox')}"
                                 )
-
                         if current_span_text_content:
                             text_items.append(
                                 TextItem(
@@ -231,10 +220,8 @@ def group_text_items_into_lines(
     lines: Lines = []
     if not sorted_items:
         return []
-
     current_line_items: Line = [sorted_items[0]]
     current_page_for_line = sorted_items[0].page_num
-
     for i in range(1, len(sorted_items)):
         item = sorted_items[i]
         if (
@@ -247,7 +234,6 @@ def group_text_items_into_lines(
                 lines.append(sorted(current_line_items, key=lambda it: it.x0))
             current_line_items = [item]
             current_page_for_line = item.page_num
-
     if current_line_items:
         lines.append(sorted(current_line_items, key=lambda it: it.x0))
     return lines
@@ -261,7 +247,6 @@ def is_section_title_heuristic(line_items: Line) -> bool:
         return False
     if not all(item.is_bold for item in line_items):
         return False
-
     combined_text_content = " ".join(item.text for item in line_items).strip()
     if not combined_text_content or not any(c.isalpha() for c in combined_text_content):
         return False
@@ -269,14 +254,12 @@ def is_section_title_heuristic(line_items: Line) -> bool:
         parts = combined_text_content.split(":", 1)
         if len(parts) > 1 and parts[1].strip():
             return False
-
     is_all_caps = combined_text_content.isupper() and len(combined_text_content) > 1
     is_title_cased = combined_text_content.istitle()
     num_words = len(combined_text_content.split())
     is_plausible_title_case_header = is_title_cased and (
         num_words > 0 and num_words <= 5
     )
-
     if is_all_caps or is_plausible_title_case_header:
         len_no_space = len(combined_text_content.replace(" ", ""))
         if not (2 <= len_no_space <= 50):
@@ -332,7 +315,6 @@ def group_lines_into_sections(lines: Lines) -> ResumeSectionToLines:
             continue
 
         line_text_concatenated = " ".join(item.text for item in line_items).strip()
-        # ---- Optional: Uncomment for detailed line-by-line processing debug ----
         # print(f"\nDEBUG SECTIONER Line {line_idx} (p{line_items[0].page_num} y{line_items[0].y0:.0f}): '{line_text_concatenated}' | Current: '{current_section_title_key}'")
 
         is_stylistic_title = is_section_title_heuristic(line_items)
@@ -345,55 +327,49 @@ def group_lines_into_sections(lines: Lines) -> ResumeSectionToLines:
             else line_text_concatenated
         )
 
-        # This variable will hold the category if this line IS a new main section.
-        # If it remains None, the line is treated as content for the current section.
         identified_new_main_section_category: Optional[str] = None
 
         if is_stylistic_title:
-            category_from_keywords_for_stylistic_title = find_section_by_keyword(
+            category_from_keywords = find_section_by_keyword(
                 title_text_for_keyword_check
             )
 
-            if category_from_keywords_for_stylistic_title:
+            if category_from_keywords:
                 # This stylistic title's text matches a known MAIN section keyword.
-                # This is a strong candidate for a new main section, UNLESS it's a suppressed subheading.
-
-                # Suppression condition:
-                # If current section is one that expects subheadings (e.g., "projects", "experience")
-                # AND the stylistic title's keyword maps to a DIFFERENT main category
-                # AND that different category is NOT "profile" (profile can usually break any section)
-                is_suppressed_subheading = (
-                    current_section_title_key in ["projects", "experience"]
-                    and category_from_keywords_for_stylistic_title
-                    != current_section_title_key
-                    and category_from_keywords_for_stylistic_title != "profile"
+                # Check for suppression: if current is "projects" and new is "publications" (from "research" keyword), suppress.
+                suppress_as_subheading = (
+                    current_section_title_key == "projects"
+                    and category_from_keywords == "publications"
                 )
+                # Add other specific suppressions if needed, e.g., for experience sub-items
+                # if current_section_title_key == "experience" and category_from_keywords == "some_other_category_that_is_often_a_sub_item":
+                #    suppress_as_subheading = True
 
-                if not is_suppressed_subheading:
-                    identified_new_main_section_category = (
-                        category_from_keywords_for_stylistic_title
-                    )
-                # else: # It IS a suppressed subheading (e.g. "Research Paper Parser" in "Projects")
-                # print(f"    Stylistic title '{title_text_for_keyword_check}' suppressed as subheading in '{current_section_title_key}'.")
-                # identified_new_main_section_category remains None, so it's treated as content.
+                if not suppress_as_subheading:
+                    identified_new_main_section_category = category_from_keywords
+                # else: # Suppressed, so it remains content for the current section
+                # print(f"    Stylistic title '{title_text_for_keyword_check}' (cat: {category_from_keywords}) suppressed as sub-item in '{current_section_title_key}'.")
+                # identified_new_main_section_category remains None
                 # else: # Stylistic title, but its text does NOT match any main section keyword (e.g. "Chatty: A Chat Application")
-                # This is treated as content for the current section.
-                # print(f"    Stylistic title '{title_text_for_keyword_check}' - no main keyword match. Treating as content.")
+                # This should be content for the current section.
+                # print(f"    Stylistic Title '{title_text_for_keyword_check}' - no main keyword match. Treating as content.")
                 # identified_new_main_section_category remains None.
-                pass  # Explicitly do nothing, it's content
+                pass  # Explicitly do nothing, it's content if no keyword match for stylistic title
 
-        # Fallback: Only if NOT a stylistic title (or if stylistic but decided to be content because no keyword match or suppressed)
+        # Fallback: If NO new main section was decided by the stylistic checks above
+        # (i.e., it wasn't stylistic, OR it was stylistic but didn't match a keyword, OR it was suppressed).
         if not identified_new_main_section_category:
+            # The line_text_concatenated is used for fallback keyword matching
             if (
-                not is_stylistic_title
-            ):  # IMPORTANT: Only apply fallback if the line wasn't already processed as a stylistic title
-                if len(line_items) <= 4 and len(line_text_concatenated) < 70:
-                    category_from_fallback = find_section_by_keyword(
-                        line_text_concatenated
-                    )
-                    if category_from_fallback:
-                        identified_new_main_section_category = category_from_fallback
-                        # print(f"    Fallback keyword match for '{line_text_concatenated}' -> {identified_new_main_section_category}")
+                len(line_items) <= 4 and len(line_text_concatenated) < 70
+            ):  # Conditions for fallback
+                category_from_fallback = find_section_by_keyword(line_text_concatenated)
+                if category_from_fallback:
+                    # Before accepting fallback, one last check: if current is projects/experience,
+                    # don't let a fallback for a *different* minor category break it unless it's a strong header.
+                    # This is tricky. For now, if stylistic checks didn't yield a section, let fallback try.
+                    identified_new_main_section_category = category_from_fallback
+                    # print(f"    Fallback Keyword Match for '{line_text_concatenated}' -> {identified_new_main_section_category}")
 
         # Decision to change section
         if (
@@ -407,10 +383,10 @@ def group_lines_into_sections(lines: Lines) -> ResumeSectionToLines:
                 )
             current_section_title_key = identified_new_main_section_category
             current_section_lines = []
-        else:  # Line is content for the current section
+        else:
             current_section_lines.append(line_items)
 
-    if current_section_lines:  # Add last section
+    if current_section_lines:
         sections.setdefault(current_section_title_key, []).extend(current_section_lines)
 
     return sections

@@ -12,8 +12,15 @@ from nltk.tokenize import word_tokenize
 
 # Import for the new segmentation logic
 from . import resume_segmenter
+from . import detailed_extractor
 
-from ..models.extraction_log import ExtractionLog, SegmentedSections  # User's model
+from ..models.extraction_log import (
+    ExtractionLog,
+    SegmentedSections,
+    WorkExperienceEntry,
+    ProjectEntry,
+    EducationEntry,
+)
 
 # Download NLTK data packages if not already downloaded
 _NLTK_PACKAGES = [
@@ -44,7 +51,7 @@ for path, package_id in _NLTK_PACKAGES:
         )
 
 
-# --- Original Text Extraction Functions ---
+# --- Original Text Extraction Functions (Defined in THIS file) ---
 def extract_text_from_pdf_fitz_plain(
     pdf_file_stream: io.BytesIO,
 ) -> Tuple[str, List[str]]:
@@ -104,15 +111,10 @@ def clean_text(text: str) -> str:
     return text
 
 
-# app/services/resume_parser.py
-# ... (imports and other functions remain the same) ...
-
-
 async def process_resume_file_to_log(
     file_stream: io.BytesIO,
     filename: str,
 ) -> ExtractionLog:
-    # ... (initial variable declarations, file reading, basic text extraction - same as response #21) ...
     raw_full_text_content = ""
     raw_text_pages_list: Optional[List[str]] = None
     file_type_processed = ""
@@ -121,7 +123,7 @@ async def process_resume_file_to_log(
     cleaned_full_resume_text = ""
     character_count_cleaned = 0
     word_count_cleaned = 0
-    dynamic_segmented_output: Optional[Dict[str, str]] = None
+    dynamic_segmented_lines_output: Optional[Dict[str, resume_segmenter.Lines]] = None
 
     try:
         original_file_content = file_stream.read()
@@ -141,17 +143,18 @@ async def process_resume_file_to_log(
 
         if file_type_processed == "pdf":
             plain_text_stream = io.BytesIO(original_file_content)
+            # VVV CORRECTED CALLS VVV
             raw_full_text_content, raw_text_pages_list = (
                 extract_text_from_pdf_fitz_plain(plain_text_stream)
             )
             plain_text_stream.close()
         elif file_type_processed == "docx":
             docx_stream = io.BytesIO(original_file_content)
-            raw_full_text_content = extract_text_from_docx(docx_stream)
+            raw_full_text_content = extract_text_from_docx(docx_stream)  # CORRECTED
             docx_stream.close()
         elif file_type_processed == "txt":
             txt_stream = io.BytesIO(original_file_content)
-            raw_full_text_content = extract_text_from_txt(txt_stream)
+            raw_full_text_content = extract_text_from_txt(txt_stream)  # CORRECTED
             txt_stream.close()
 
         if not raw_full_text_content.strip():
@@ -160,7 +163,7 @@ async def process_resume_file_to_log(
             )
             raise ValueError(error_message_log)
 
-        cleaned_full_resume_text = clean_text(raw_full_text_content)
+        cleaned_full_resume_text = clean_text(raw_full_text_content)  # CORRECTED
         character_count_cleaned = len(cleaned_full_resume_text)
 
         try:
@@ -181,17 +184,12 @@ async def process_resume_file_to_log(
         if file_type_processed == "pdf":
             segmenter_stream = io.BytesIO(original_file_content)
             try:
-                rich_sections, _, _ = resume_segmenter.segment_resume(segmenter_stream)
-                # print(f"DEBUG PARSER: Keys from segmenter: {list(rich_sections.keys()) if rich_sections else 'None/Empty'}")
+                rich_sections_with_lines, _, _ = resume_segmenter.segment_resume(
+                    segmenter_stream
+                )
 
-                if rich_sections:
-                    dynamic_segmented_output = {}
-                    for title, lines_of_text_items in rich_sections.items():
-                        section_text = resume_segmenter.convert_section_lines_to_text(
-                            lines_of_text_items
-                        )
-                        dynamic_segmented_output[title] = section_text
-
+                if rich_sections_with_lines:
+                    dynamic_segmented_lines_output = rich_sections_with_lines
                     if extraction_status != "failure":
                         extraction_status = "success"
                     if error_message_log and "NLTK" in error_message_log:
@@ -233,200 +231,147 @@ async def process_resume_file_to_log(
         traceback.print_exc()
 
     # --- Map dynamic_segmented_output to the fixed SegmentedSections Pydantic model ---
-    mapped_model_data = {
-        "contact_info_text": None,
-        "summary_text": None,
-        "experience_text": None,
-        "education_text": None,
-        "skills_text": None,
-        "projects_text": None,
-        "awards_text": None,
-        "publications_text": None,
-        "certifications_text": None,
-        "volunteer_experience_text": None,
-        "positions_of_responsibility_text": None,
-        "languages_text": None,
-        # Ensure this matches ALL fields in your SegmentedSections Pydantic model
-    }
+    segmented_data_for_model = SegmentedSections()
 
-    if dynamic_segmented_output:
-        normalized_segmenter_output = {
-            key.lower().replace("_", " ").strip(): text
-            for key, text in dynamic_segmented_output.items()
+    if dynamic_segmented_lines_output:
+        normalized_segmenter_keys = {
+            key.lower().replace("_", " ").strip(): lines_list
+            for key, lines_list in dynamic_segmented_lines_output.items()
         }
 
-        # Explicitly define your target Pydantic model field names here for clarity
-        pydantic_contact = "contact_info_text"
-        pydantic_summary = "summary_text"
-        pydantic_experience = "experience_text"
-        pydantic_education = "education_text"
-        pydantic_skills = "skills_text"
-        pydantic_projects = "projects_text"
-        pydantic_awards = "awards_text"
-        pydantic_publications = "publications_text"
-        pydantic_certs = "certifications_text"
-        pydantic_volunteer = "volunteer_experience_text"
-        pydantic_positions = "positions_of_responsibility_text"
-        pydantic_languages = "languages_text"
+        unmapped_text_sections: Dict[str, str] = {}
 
-        # More flexible mapping: iterate through segmenter keys and see if they indicate a target field
-        for seg_key_norm, seg_text in normalized_segmenter_output.items():
-            mapped_to_field = False
+        for seg_key_norm, lines_list_val in normalized_segmenter_keys.items():
+            section_text_content = resume_segmenter.convert_section_lines_to_text(
+                lines_list_val
+            )
+
             if seg_key_norm == "profile" or seg_key_norm == "contact":
-                mapped_model_data[pydantic_contact] = (
-                    mapped_model_data[pydantic_contact] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_contact]
-                    else seg_text
+                segmented_data_for_model.contact_info_text = (
+                    segmented_data_for_model.contact_info_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.contact_info_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if seg_key_norm == "summary" or seg_key_norm == "objective":
-                mapped_model_data[pydantic_summary] = (
-                    mapped_model_data[pydantic_summary] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_summary]
-                    else seg_text
+            elif seg_key_norm == "summary" or seg_key_norm == "objective":
+                segmented_data_for_model.summary_text = (
+                    segmented_data_for_model.summary_text + f"\n{section_text_content}"
+                    if segmented_data_for_model.summary_text
+                    else section_text_content
                 )
-                mapped_to_field = True
 
-            # User's request: "if experience is there then just put it under experience text"
-            # This means if any segmenter key *contains* "experience"
-            if (
-                "experience" in seg_key_norm
-            ):  # Check if "experience" is a substring of the segmenter's key
-                mapped_model_data[pydantic_experience] = (
-                    mapped_model_data[pydantic_experience] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_experience]
-                    else seg_text
-                )
-                mapped_to_field = True
-            # Also handle exact matches from COMMON_SECTION_KEYWORDS that map to experience
-            elif seg_key_norm in [
+            elif "experience" in seg_key_norm or seg_key_norm in [
                 "work experience",
                 "employment history",
                 "professional experience",
-                "career summary",
-                "work history",
-                "relevant experience",
-                "professional background",
-                "career history",
                 "internship",
                 "internships",
                 "work and research experience",
             ]:
-                mapped_model_data[pydantic_experience] = (
-                    mapped_model_data[pydantic_experience] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_experience]
-                    else seg_text
+                exp_entries = detailed_extractor.extract_experience_details(
+                    lines_list_val
                 )
-                mapped_to_field = True
+                if exp_entries:
+                    segmented_data_for_model.experience_entries.extend(exp_entries)
 
-            if seg_key_norm == "education" or "academic" in seg_key_norm:
-                mapped_model_data[pydantic_education] = (
-                    mapped_model_data[pydantic_education] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_education]
-                    else seg_text
+            elif seg_key_norm == "education" or "academic" in seg_key_norm:
+                edu_entries = detailed_extractor.extract_education_details(
+                    lines_list_val
                 )
-                mapped_to_field = True
-            if (
+                if edu_entries:
+                    segmented_data_for_model.education_entries.extend(edu_entries)
+
+            elif (
                 "skill" in seg_key_norm
                 or "proficienc" in seg_key_norm
                 or "expertise" in seg_key_norm
-            ):  # Catches "skills", "technical skills", etc.
-                mapped_model_data[pydantic_skills] = (
-                    mapped_model_data[pydantic_skills] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_skills]
-                    else seg_text
+            ):
+                segmented_data_for_model.skills_text = (
+                    segmented_data_for_model.skills_text + f"\n{section_text_content}"
+                    if segmented_data_for_model.skills_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if (
-                "project" in seg_key_norm
-            ):  # Catches "projects", "personal projects", etc.
-                mapped_model_data[pydantic_projects] = (
-                    mapped_model_data[pydantic_projects] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_projects]
-                    else seg_text
+
+            elif "project" in seg_key_norm:
+                proj_entries = detailed_extractor.extract_project_details(
+                    lines_list_val
                 )
-                mapped_to_field = True
-            if (
+                if proj_entries:
+                    segmented_data_for_model.project_entries.extend(proj_entries)
+
+            elif (
                 "award" in seg_key_norm
                 or "honor" in seg_key_norm
                 or "achievement" in seg_key_norm
             ):
-                mapped_model_data[pydantic_awards] = (
-                    mapped_model_data[pydantic_awards] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_awards]
-                    else seg_text
+                segmented_data_for_model.awards_text = (
+                    segmented_data_for_model.awards_text + f"\n{section_text_content}"
+                    if segmented_data_for_model.awards_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if (
-                "publication" in seg_key_norm or "research" in seg_key_norm
-            ):  # Catches "publications", "research paper parser" if it was categorized as 'publications'
-                mapped_model_data[pydantic_publications] = (
-                    mapped_model_data[pydantic_publications] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_publications]
-                    else seg_text
+
+            elif "publication" in seg_key_norm or (
+                "research" in seg_key_norm
+                and seg_key_norm != "work and research experience"
+            ):
+                segmented_data_for_model.publications_text = (
+                    segmented_data_for_model.publications_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.publications_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if (
+
+            elif (
                 "certification" in seg_key_norm
                 or "license" in seg_key_norm
                 or "credential" in seg_key_norm
             ):
-                mapped_model_data[pydantic_certs] = (
-                    mapped_model_data[pydantic_certs] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_certs]
-                    else seg_text
+                segmented_data_for_model.certifications_text = (
+                    segmented_data_for_model.certifications_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.certifications_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if "volunteer" in seg_key_norm or "community" in seg_key_norm:
-                mapped_model_data[pydantic_volunteer] = (
-                    mapped_model_data[pydantic_volunteer] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_volunteer]
-                    else seg_text
+
+            elif "volunteer" in seg_key_norm or "community" in seg_key_norm:
+                segmented_data_for_model.volunteer_experience_text = (
+                    segmented_data_for_model.volunteer_experience_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.volunteer_experience_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if (
+
+            elif (
                 "positions of responsibility" in seg_key_norm
                 or "leadership" in seg_key_norm
                 or "activit" in seg_key_norm
-            ):  # "activit" for "activities"
-                mapped_model_data[pydantic_positions] = (
-                    mapped_model_data[pydantic_positions] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_positions]
-                    else seg_text
+            ):
+                segmented_data_for_model.positions_of_responsibility_text = (
+                    segmented_data_for_model.positions_of_responsibility_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.positions_of_responsibility_text
+                    else section_text_content
                 )
-                mapped_to_field = True
-            if "language" in seg_key_norm:
-                mapped_model_data[pydantic_languages] = (
-                    mapped_model_data[pydantic_languages] + f"\n\n---\n\n{seg_text}"
-                    if mapped_model_data[pydantic_languages]
-                    else seg_text
+
+            elif "language" in seg_key_norm:
+                segmented_data_for_model.languages_text = (
+                    segmented_data_for_model.languages_text
+                    + f"\n{section_text_content}"
+                    if segmented_data_for_model.languages_text
+                    else section_text_content
                 )
-                mapped_to_field = True
+            else:
+                unmapped_text_sections[seg_key_norm] = section_text_content
 
-            # if not mapped_to_field:
-            #     print(f"INFO: Unmapped section from segmenter: '{seg_key_norm}' with content preview: '{seg_text[:50]}...'")
+        if unmapped_text_sections:
+            segmented_data_for_model.unmapped_sections = unmapped_text_sections
 
-    log_segments_object = None
-    try:
-        log_segments_object = SegmentedSections(**mapped_model_data)
-    except Exception as pydantic_e:
-        print(
-            f"Error instantiating SegmentedSections Pydantic model: {pydantic_e}. Data was: {mapped_model_data}"
-        )
-        log_segments_object = SegmentedSections()
-        current_error_msg = "Error structuring segmented data for log."
-        if not error_message_log:
-            error_message_log = current_error_msg
-        else:
-            error_message_log += f" {current_error_msg}"
-        if extraction_status != "failure":
-            extraction_status = "partial_success"
+    log_segments_object = segmented_data_for_model
 
     if error_message_log and "NLTK resource error" in error_message_log:
         word_count_cleaned = 0
 
     return ExtractionLog(
-        # ... (rest of fields are the same)
         resume_filename=filename,
         extraction_timestamp=datetime.datetime.now(datetime.timezone.utc),
         file_type_processed=file_type_processed if file_type_processed else "unknown",
