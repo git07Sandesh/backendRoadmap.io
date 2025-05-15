@@ -1,24 +1,49 @@
-from typing import List, Callable, Tuple, Union, Optional, Any, Pattern, Dict
-import re  # For Pattern
+from typing import (
+    List,
+    Callable,
+    Tuple,
+    Union,
+    Optional,
+    Dict as PyDict,
+)  # Renamed Dict to PyDict
+import re
+from pydantic import BaseModel  # Import BaseModel
 
-# Import main data structures from models.py
-from app.models import TextItem, Line, Lines, Subsections, TextScore, TextScores
+# Using Pydantic TextItem from models.py is fine if it serves well.
+# For parser-internal use, if TextItem needs more fields or different behavior,
+# it could be redefined here. For now, assume app.models.TextItem is used.
+from app.models import TextItem
 
-# Type alias for feature functions and scores
-FeatureScore = int  # -4 to 4 in original, but int is fine
+Line = List[TextItem]
+Lines = List[Line]
+Subsections = List[Lines]
+
+
+class TextScore(BaseModel):  # Explicitly define here if not in models or if different
+    text: str
+    score: int
+    match: bool
+
+
+TextScores = List[TextScore]
+
+ResumeKey = str
+ResumeSectionToLinesMap = PyDict[ResumeKey, Lines]
+
+# FeatureSet related types
+FeatureScoreValue = int
 ReturnMatchingTextOnly = bool
 
-# A feature can be a function that returns bool, or one that returns a regex match
 FeatureFunctionBool = Callable[[TextItem], bool]
-FeatureFunctionMatch = Callable[[TextItem], Optional[re.Match[str]]]
+FeatureFunctionMatch = Callable[
+    [TextItem], Optional[re.Match[str]]
+]  # For regex returning match objects
 
-FeatureSetItemBool = Tuple[FeatureFunctionBool, FeatureScore]
-FeatureSetItemMatch = Tuple[FeatureFunctionMatch, FeatureScore, ReturnMatchingTextOnly]
+FeatureSetItemBool = Tuple[FeatureFunctionBool, FeatureScoreValue]
+FeatureSetItemMatch = Tuple[
+    FeatureFunctionMatch, FeatureScoreValue, ReturnMatchingTextOnly
+]
 
-FeatureSet = Union[FeatureSetItemBool, FeatureSetItemMatch]
-FeatureSets = List[
-    FeatureSet
-]  # Changed from original 'FeatureSet[]' to 'List<FeatureSet>' for clarity
-
-ResumeKey = str  # e.g., "profile", "education", etc.
-ResumeSectionToLinesMap = Dict[ResumeKey, Lines]
+# A FeatureSet is a list of these items
+FeatureSetItem = Union[FeatureSetItemBool, FeatureSetItemMatch]
+FeatureSets = List[FeatureSetItem]
