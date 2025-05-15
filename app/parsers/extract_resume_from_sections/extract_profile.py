@@ -1,3 +1,5 @@
+# app/parsers/extract_resume_from_sections/extract_profile.py
+# (Use the refined version from previous response "abandon table parsing...", but with adjustments)
 import re
 from typing import Tuple, Dict, Any, Optional
 from app.parsers.types import TextItem, FeatureSets, ResumeSectionToLinesMap, TextScores
@@ -7,132 +9,141 @@ from app.parsers.extract_resume_from_sections.lib.common_features import (
     has_comma,
     has_letter,
     has_letter_and_is_all_upper_case,
-    is_likely_tech_stack,  # Import new feature
+    is_likely_tech_stack,
+    has_year_keyword,
+)
+from app.parsers.extract_resume_from_sections.lib.common_features import (
+    has_degree_keyword_heuristic,
+    has_school_keyword_heuristic,
+)
+
+from app.parsers.extract_resume_from_sections.lib.get_section_lines import (
+    get_section_lines_by_keywords,
 )
 from app.parsers.extract_resume_from_sections.lib.feature_scoring_system import (
     get_text_with_highest_feature_score,
 )
-from app.parsers.extract_resume_from_sections.lib.get_section_lines import (
-    get_section_lines_by_keywords,
-)
 from app.models import ResumeProfile
 
 
-# Name
-def match_only_letter_space_or_period(item: TextItem) -> Optional[re.Match[str]]:
-    # Should be at least two words or a single word if it's long enough and all caps
+# --- Profile Feature Definitions ---
+def match_name_heuristic(item: TextItem) -> Optional[re.Match[str]]:
     text = item.text.strip()
-    if " " in text or (len(text) > 5 and text.isupper()):
-        return re.fullmatch(r"^[a-zA-Z\s\.]+$", text)
+    # Usually 2-3 words, first letter of each capitalized.
+    if 1 < len(text.split()) <= 4 and all(
+        word[0].isupper() for word in text.split() if word
+    ):
+        if re.fullmatch(r"^[a-zA-Z\s\.'-]+$", text):  # Allows common name chars
+            return re.fullmatch(r"^[a-zA-Z\s\.'-]+$", text)
+    # Single very prominent name (e.g., all caps, bold)
+    if len(text.split()) == 1 and len(text) > 3 and (is_bold(item) or text.isupper()):
+        if re.fullmatch(r"^[a-zA-Z'-]+$", text):
+            return re.fullmatch(r"^[a-zA-Z'-]+$", text)
     return None
 
 
-# Email
-def match_email(item: TextItem) -> Optional[re.Match[str]]:
-    return re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", item.text)
-
-
-def has_at(item: TextItem) -> bool:
-    return "@" in item.text
-
-
-# Phone
-def match_phone(item: TextItem) -> Optional[re.Match[str]]:
-    # Allow more variations, including international prefixes or extensions
+def match_email_address(item: TextItem) -> Optional[re.Match[str]]:
     return re.search(
-        r"\(?\+?\d{1,3}\)?[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?:[\s.-]?ext\.?\s*\d+)?",
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b", item.text
+    )  # Extended TLD
+
+
+def match_phone_number(item: TextItem) -> Optional[re.Match[str]]:
+    # More permissive for various formats
+    return re.search(
+        r"\(?\+?\d{1,3}\)?[\s.-]?\(?\d{2,5}\)?[\s.-]?\d{2,5}[\s.-]?\d{2,5}(?:[\s.-]?(?:ext|x|)\.?\s*\d{1,5})?",
         item.text,
     )
 
 
-def has_parenthesis(item: TextItem) -> bool:
-    return bool(re.search(r"\([0-9]+\)", item.text))
-
-
-# Location
-def match_city_and_state(item: TextItem) -> Optional[re.Match[str]]:
-    return re.search(r"\b[A-Z][a-zA-Z\s.-]+,\s*[A-Z]{2}\b", item.text)
-
-
-# Url
-def match_linkedin_url(item: TextItem) -> Optional[re.Match[str]]:
-    return re.search(r"linkedin\.com/in/[\w-]+/?", item.text, re.IGNORECASE)
-
-
-def match_github_url(item: TextItem) -> Optional[re.Match[str]]:
-    return re.search(r"github\.(?:com|io)/[\w-]+/?", item.text, re.IGNORECASE)
-
-
-def match_general_url(item: TextItem) -> Optional[re.Match[str]]:
-    # Avoid matching email addresses
-    if "@" in item.text:
+def match_location_heuristic(item: TextItem) -> Optional[re.Match[str]]:
+    # City, ST | City, State | City | Country
+    # Avoid matching education/degree lines as location
+    text = item.text.strip()
+    if has_degree_keyword_heuristic(item) or has_school_keyword_heuristic(item):
         return None
-    # Basic http/https/www, or domain.tld/path
+    if (
+        has_year_keyword(item)
+        or "@" in text
+        or "linkedin.com" in text
+        or "github" in text
+    ):
+        return None
+
+    # Common patterns: City, ST | City, Country | City only if few words & capitalized
+    if re.search(
+        r"\b[A-Z][a-zA-Z\s.-]+,\s*(?:[A-Z]{2}|[A-Za-z\s]+)\b", text
+    ):  # City, ST or City, Country
+        return re.search(r"\b[A-Z][a-zA-Z\s.-]+,\s*(?:[A-Z]{2}|[A-Za-z\s]+)\b", text)
+    if (
+        len(text.split(",")) == 1
+        and len(text.split()) <= 3
+        and text[0].isupper()
+        and not any(char.isdigit() for char in text)
+    ):  # Just city or country
+        return re.match(r"^[A-Z][a-zA-Z\s.-]+$", text)
+    return None
+
+
+def match_linkedin_profile_url(item: TextItem) -> Optional[re.Match[str]]:
+    return re.search(r"linkedin\.com/(?:in|pub)/[\w%/.-]+/?", item.text, re.IGNORECASE)
+
+
+def match_github_profile_url(item: TextItem) -> Optional[re.Match[str]]:
     return re.search(
-        r"(?:https?://|www\.)[\w\.-]+(?:\.[\w])[\w\.-]*(?:/\S*)?|[\w\.-]+\.(?:com|org|net|io|dev|me|tech|ai|co|us)(?:/\S*)?",
+        r"(?:github\.com/|github/|[\w-]+\.github\.io/?)(?!.*\.(?:png|jpg|svg))[\w%/.-]*",
         item.text,
         re.IGNORECASE,
     )
 
 
-def has_slash(item: TextItem) -> bool:
-    return "/" in item.text and not "@" in item.text
+def match_other_profile_url(item: TextItem) -> Optional[re.Match[str]]:
+    if "@" in item.text or "linkedin.com" in item.text or "github" in item.text:
+        return None
+    # More general, less specific, looks for domain.tld, possibly with path
+    return re.search(
+        r"(?:https?://|www\.)?[\w\.-]+\.(?:[a-z]{2,})(?:/[\S]*)?",
+        item.text,
+        re.IGNORECASE,
+    )
 
 
-# Summary
-def has_4_or_more_words(item: TextItem) -> bool:
-    return len(item.text.split()) >= 4
+def is_profile_summary_candidate(item: TextItem) -> bool:
+    text = item.text.strip()
+    if not text or len(text.split()) < 5:
+        return False  # At least 5 words
+    # Not any of the other specific profile fields
+    if (
+        match_name_heuristic(item)
+        or match_email_address(item)
+        or match_phone_number(item)
+        or match_location_heuristic(item)
+        or match_linkedin_profile_url(item)
+        or match_github_profile_url(item)
+        or has_degree_keyword_heuristic(item)
+        or has_school_keyword_heuristic(item)
+    ):
+        return False
+    return True
 
 
-NAME_FEATURE_SETS: FeatureSets = [
-    (match_only_letter_space_or_period, 3, True),
-    (is_bold, 2),
-    (has_letter_and_is_all_upper_case, 2),
-    (has_at, -4),
-    (match_phone, -4, False),
-    (has_parenthesis, -4),  # Use match_phone here
-    (has_comma, -2),  # Name can have comma for suffixes, but penalize slightly
-    (has_slash, -4),
-    (has_4_or_more_words, -2),
+# Feature Sets
+NAME_FS: FeatureSets = [(match_name_heuristic, 5, True), (is_bold, 2)]
+EMAIL_FS: FeatureSets = [(match_email_address, 5, True)]
+PHONE_FS: FeatureSets = [(match_phone_number, 5, True)]
+LOCATION_FS: FeatureSets = [(match_location_heuristic, 4, True)]
+URL_FS: FeatureSets = [  # Order matters for prioritization in multi-URL collection
+    (match_linkedin_profile_url, 6, True),
+    (match_github_profile_url, 5, True),
+    (match_other_profile_url, 3, True),
+]
+SUMMARY_FS: FeatureSets = [
+    (is_profile_summary_candidate, 3),
+    # Negative scores for things a summary is NOT (especially if these are found in profile lines)
+    (has_degree_keyword_heuristic, -5),
+    (has_school_keyword_heuristic, -5),
     (is_likely_tech_stack, -4),
-]
-EMAIL_FEATURE_SETS: FeatureSets = [
-    (match_email, 4, True),
-    (is_bold, -1),
-    (has_letter_and_is_all_upper_case, -1),
-    (has_parenthesis, -4),
-    (has_comma, -4),
-    (has_slash, -4),
-    (has_4_or_more_words, -4),
-]
-PHONE_FEATURE_SETS: FeatureSets = [
-    (match_phone, 4, True),
-    (has_letter, -4),
-]
-LOCATION_FEATURE_SETS: FeatureSets = [
-    (match_city_and_state, 4, True),
-    (is_bold, -1),
-    (has_at, -4),
-    (has_parenthesis, -3),
-    (has_slash, -4),
-]
-URL_FEATURE_SETS: FeatureSets = [
-    (match_linkedin_url, 5, True),  # Prioritize LinkedIn
-    (match_github_url, 5, True),  # Prioritize GitHub
-    (match_general_url, 3, True),
-    (is_bold, -1),
-    (has_at, -4),
-    (has_parenthesis, -3),
-    (has_comma, -4),
-    (has_4_or_more_words, -4),
-]
-SUMMARY_FEATURE_SETS: FeatureSets = [
-    (has_4_or_more_words, 4),
-    (is_bold, -1),
-    (has_at, -4),
-    (has_parenthesis, -3),
-    (match_city_and_state, -4, False),
-    (is_likely_tech_stack, -4),
+    (has_year_keyword, -3),
 ]
 
 
@@ -140,88 +151,103 @@ def extract_profile(
     sections: ResumeSectionToLinesMap,
 ) -> Tuple[ResumeProfile, Dict[str, TextScores]]:
     profile_lines = sections.get("profile", [])
-    # The name and contact info are usually at the very top, before any explicit section titles.
-    # So, if "profile" section is empty, consider the first few lines of the whole resume.
-    # This part is tricky; for now, assume `group_lines_into_sections` correctly populates 'profile'.
-
     text_items = [item for sublist in profile_lines for item in sublist]
 
-    name, name_scores = get_text_with_highest_feature_score(
-        text_items, NAME_FEATURE_SETS
-    )
-    email, email_scores = get_text_with_highest_feature_score(
-        text_items, EMAIL_FEATURE_SETS
-    )
-    phone, phone_scores = get_text_with_highest_feature_score(
-        text_items, PHONE_FEATURE_SETS
-    )
+    name, name_scores = get_text_with_highest_feature_score(text_items, NAME_FS)
+    email, email_scores = get_text_with_highest_feature_score(text_items, EMAIL_FS)
+    phone, phone_scores = get_text_with_highest_feature_score(text_items, PHONE_FS)
     location, location_scores = get_text_with_highest_feature_score(
-        text_items, LOCATION_FEATURE_SETS
+        text_items, LOCATION_FS
     )
 
-    # For URLs, we might have multiple. Let's try to find all good ones.
-    # The current `getTextWithHighestFeatureScore` returns only one.
-    # A temporary workaround: run it multiple times, excluding previously found items.
-    # This is complex. For now, let's see if the improved regex helps get at least one.
-    url, url_scores = get_text_with_highest_feature_score(text_items, URL_FEATURE_SETS)
+    # Collect all potential URLs from profile text items
+    collected_urls = {}  # Use dict to store URL and its source type for prioritizing
+    for item in text_items:
+        linkedin_match = match_linkedin_profile_url(item)
+        if linkedin_match:
+            collected_urls[linkedin_match.group(0).strip()] = "linkedin"
 
-    # If multiple URLs are on separate lines and score similarly, we might need to combine them.
-    # Example: Check if 'url' is just one and try to find another if the first one was LinkedIn.
-    all_urls = []
-    if url:
-        all_urls.append(url)
+        github_match = match_github_profile_url(item)
+        if github_match:
+            collected_urls[github_match.group(0).strip()] = "github"
 
-    # Try to find a second URL if the first one was LinkedIn and there are other candidates
-    if "linkedin.com" in url.lower():
-        remaining_items_for_url = [ti for ti in text_items if url not in ti.text]
-        if remaining_items_for_url:
-            second_url, _ = get_text_with_highest_feature_score(
-                remaining_items_for_url, URL_FEATURE_SETS
-            )
-            if (
-                second_url
-                and "linkedin.com" not in second_url.lower()
-                and second_url not in all_urls
-            ):
-                all_urls.append(second_url)
+        other_match = match_other_profile_url(item)
+        if (
+            other_match and other_match.group(0).strip() not in collected_urls
+        ):  # Avoid adding if already caught by specific
+            collected_urls[other_match.group(0).strip()] = "other"
 
-    final_url_string = " | ".join(all_urls) if all_urls else ""
-
-    summary, summary_scores = get_text_with_highest_feature_score(
-        text_items, SUMMARY_FEATURE_SETS, True, True
+    # Prioritize and join URLs
+    sorted_urls = sorted(
+        collected_urls.keys(),
+        key=lambda u: (
+            (
+                0
+                if "linkedin" in collected_urls[u]
+                else 1 if "github" in collected_urls[u] else 2
+            ),
+            u,
+        ),
     )
+    url_string = " | ".join(sorted_urls)
+    _, url_scores = get_text_with_highest_feature_score(
+        text_items, URL_FS
+    )  # For debug scores
 
-    summary_section_lines = get_section_lines_by_keywords(
-        sections, ["summary", "objective"]
-    )  # Combined
-    summary_section_text = " ".join(
-        item.text for line in summary_section_lines for item in line
-    ).strip()
+    # Summary
+    summary_from_section_text = ""
+    summary_section_keys = [
+        "SUMMARY",
+        "summary",
+        "OBJECTIVE",
+        "objective",
+        "Professional Summary",
+        "Career Objective",
+    ]
+    for key in summary_section_keys:
+        if key in sections and sections[key]:  # Check if section exists and has lines
+            summary_lines = sections[key]
+            summary_from_section_text = " ".join(
+                item.text for line in summary_lines for item in line
+            ).strip()
+            if summary_from_section_text:
+                break
 
-    objective_section_lines = get_section_lines_by_keywords(
-        sections, ["objective"]
-    )  # Already handled if combined
-    objective_section_text = " ".join(
-        item.text for line in objective_section_lines for item in line
-    ).strip()
+    summary_from_profile_items = ""
+    if not summary_from_section_text and text_items:
+        summary_from_profile_items, _ = get_text_with_highest_feature_score(
+            text_items,
+            SUMMARY_FS,
+            return_empty_string_if_highest_score_is_not_positive=True,
+            return_concatenated_string_for_texts_with_same_highest_score=True,
+        )
 
-    final_summary = summary_section_text or objective_section_text or summary
+    final_summary = summary_from_section_text or summary_from_profile_items
+    # Specific cleanup if summary accidentally grabbed degree/school from Sandesh's resume profile block
+    if (
+        final_summary and not summary_from_section_text
+    ):  # Only if summary came from general profile items
+        if has_degree_keyword_heuristic(
+            TextItem(text=final_summary, x=0, y=0, width=0, height=0, fontName="")
+        ) or has_school_keyword_heuristic(
+            TextItem(text=final_summary, x=0, y=0, width=0, height=0, fontName="")
+        ):
+            final_summary = ""
 
     profile_data = ResumeProfile(
         name=name,
         email=email,
         phone=phone,
         location=location,
-        url=final_url_string,
+        url=url_string,
         summary=final_summary,
     )
-
+    # Simplified debug scores for brevity
     profile_scores_debug = {
         "name": name_scores,
         "email": email_scores,
         "phone": phone_scores,
         "location": location_scores,
         "url": url_scores,
-        "summary": summary_scores,
     }
     return profile_data, profile_scores_debug
