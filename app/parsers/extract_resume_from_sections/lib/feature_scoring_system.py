@@ -4,11 +4,9 @@ from app.parsers.types import (
     TextScores,
     FeatureSets,
     TextScore,
-    FeatureSet,
-    FeatureScore,
+    FeatureSetItem,
+    FeatureScoreValue,
     ReturnMatchingTextOnly,
-    FeatureFunctionBool,
-    FeatureFunctionMatch,
 )
 import re
 
@@ -16,68 +14,62 @@ import re
 def compute_feature_scores(
     text_items: List[TextItem], feature_sets: FeatureSets
 ) -> TextScores:
-    text_scores_list: TextScores = [
-        TextScore(text=item.text, score=0, match=False) for item in text_items
-    ]
+    # Initialize scores for each original text_item
+    # We will create new TextScore objects for sub-matches later.
+    item_to_base_score_obj: Dict[int, TextScore] = {
+        i: TextScore(text=text_items[i].text, score=0, match=False)
+        for i in range(len(text_items))
+    }
 
-    # To handle cases where a regex match extracts a substring, we might need a more flexible way
-    # to add new TextScore objects if a feature extracts a part of item.text
-    # For now, let's try to map to the original structure as closely as possible
-    # The original's textScores.push({ text, score, match: true }); implies adding new entries
-
-    additional_scores: TextScores = []
+    # Store scores for texts that are sub-matches from regex features
+    sub_match_scores: Dict[str, TextScore] = {}
 
     for i, text_item in enumerate(text_items):
-        item_base_score_obj = text_scores_list[i]
+        base_score_obj = item_to_base_score_obj[i]
 
-        for feature_set_item in feature_sets:
-            has_feature_func = feature_set_item[0]
-            score_value: FeatureScore = feature_set_item[1]
+        for feature_set_item_union in feature_sets:
+            # Unpack the feature set item
+            has_feature_func = feature_set_item_union[0]
+            score_value: FeatureScoreValue = feature_set_item_union[1]
             return_matching_text: ReturnMatchingTextOnly = False
-            if len(feature_set_item) > 2:
-                return_matching_text = feature_set_item[2]  # type: ignore
+            if len(feature_set_item_union) == 3:  # It's a FeatureSetItemMatch
+                return_matching_text = feature_set_item_union[2]  # type: ignore
 
-            result = has_feature_func(
-                text_item
-            )  # This can be bool or Match object or None
+            result = has_feature_func(text_item)  # bool or Match object or None
 
             if result:  # True for bool, or non-None for Match object
                 extracted_text_for_score = text_item.text
                 is_sub_match = False
 
-                if return_matching_text and isinstance(result, re.Match):
-                    extracted_text_for_score = result.group(0)  # Get the matched part
+                if (
+                    return_matching_text
+                    and isinstance(result, re.Match)
+                    and result.group(0)
+                ):
+                    # Ensure group(0) is not None, though re.Match implies it matched something
+                    extracted_text_for_score = result.group(0)
                     if extracted_text_for_score != text_item.text:
                         is_sub_match = True
 
                 if is_sub_match:
-                    # Check if this sub_match already exists in additional_scores to consolidate
-                    found_in_additional = False
-                    for asc_obj in additional_scores:
-                        if asc_obj.text == extracted_text_for_score:
-                            asc_obj.score += score_value
-                            asc_obj.match = (
-                                True  # Ensure match is true if any feature set marks it
-                            )
-                            found_in_additional = True
-                            break
-                    if not found_in_additional:
-                        additional_scores.append(
-                            TextScore(
-                                text=extracted_text_for_score,
-                                score=score_value,
-                                match=True,
-                            )
+                    if extracted_text_for_score not in sub_match_scores:
+                        sub_match_scores[extracted_text_for_score] = TextScore(
+                            text=extracted_text_for_score,
+                            score=0,
+                            match=True,  # Always true for sub_matches
                         )
+                    sub_match_scores[extracted_text_for_score].score += score_value
                 else:  # Apply score to the original item's score object
-                    item_base_score_obj.score += score_value
+                    base_score_obj.score += score_value
                     if (
                         return_matching_text
-                    ):  # Even if not a sub-match, mark it as a specific match
-                        item_base_score_obj.match = True
+                    ):  # Mark if a regex feature (even full match) was intended
+                        base_score_obj.match = True
 
-    text_scores_list.extend(additional_scores)
-    return text_scores_list
+    final_scores_list: TextScores = list(item_to_base_score_obj.values()) + list(
+        sub_match_scores.values()
+    )
+    return final_scores_list
 
 
 def get_text_with_highest_feature_score(
@@ -85,65 +77,62 @@ def get_text_with_highest_feature_score(
     feature_sets: FeatureSets,
     return_empty_string_if_highest_score_is_not_positive: bool = True,
     return_concatenated_string_for_texts_with_same_highest_score: bool = False,
-) -> Tuple[str, TextScores]:
+) -> Tuple[
+    str, TextScores
+]:  # Return extracted text and all computed scores for debugging
 
-    text_scores = compute_feature_scores(text_items, feature_sets)
-
-    if not text_scores:
+    if not text_items:  # Handle empty input
         return "", []
 
-    texts_with_highest_feature_score: List[str] = []
-    highest_score = -float("inf")
+    text_scores_computed = compute_feature_scores(text_items, feature_sets)
 
-    # First pass: find the highest score among all (original items and sub-matches)
-    for ts_obj in text_scores:
-        if ts_obj.score > highest_score:
-            highest_score = ts_obj.score
+    if not text_scores_computed:
+        return "", []
 
-    # Second pass: collect all texts that achieved this highest score
-    # Prioritize 'match == True' if scores are equal, as per original logic implicitly
-    # by pushing new items for sub-matches.
+    # Find the highest score achieved
+    highest_score_val = -float("inf")
+    for ts_obj in text_scores_computed:
+        if ts_obj.score > highest_score_val:
+            highest_score_val = ts_obj.score
 
-    # Collect items with highest_score, separating matched and non-matched
-    highest_score_items_matched: List[str] = []
-    highest_score_items_unmatched: List[str] = []
+    # Collect all texts that achieved this highest score
+    # Prioritize items where `match == True` (i.e., specific regex matches)
+    candidates_at_highest_score_matched: List[str] = []
+    candidates_at_highest_score_unmatched: List[str] = []
 
-    for ts_obj in text_scores:
-        if ts_obj.score == highest_score:
+    for ts_obj in text_scores_computed:
+        if ts_obj.score == highest_score_val:
             if ts_obj.match:
-                highest_score_items_matched.append(ts_obj.text)
+                candidates_at_highest_score_matched.append(ts_obj.text)
             else:
-                highest_score_items_unmatched.append(ts_obj.text)
+                candidates_at_highest_score_unmatched.append(ts_obj.text)
 
-    # Prefer explicitly matched items
-    if highest_score_items_matched:
-        texts_with_highest_feature_score = list(
-            set(highest_score_items_matched)
-        )  # Unique texts
-    elif highest_score_items_unmatched:  # Only if no matched items at this score
-        texts_with_highest_feature_score = list(set(highest_score_items_unmatched))
-    else:  # Should not happen if highest_score was found
-        texts_with_highest_feature_score = []
+    final_texts_with_highest_score: List[str]
+    if candidates_at_highest_score_matched:
+        final_texts_with_highest_score = sorted(
+            list(set(candidates_at_highest_score_matched))
+        )  # Unique & sorted
+    elif (
+        candidates_at_highest_score_unmatched
+    ):  # Only if no 'matched' items at this score
+        final_texts_with_highest_score = sorted(
+            list(set(candidates_at_highest_score_unmatched))
+        )
+    else:
+        final_texts_with_highest_score = []
 
-    if return_empty_string_if_highest_score_is_not_positive and highest_score <= 0:
-        return "", text_scores
+    if return_empty_string_if_highest_score_is_not_positive and highest_score_val <= 0:
+        return "", text_scores_computed
 
-    if not texts_with_highest_feature_score:
-        return "", text_scores
+    if not final_texts_with_highest_score:
+        return "", text_scores_computed  # No candidates found or score was too low
 
     text_output: str
     if not return_concatenated_string_for_texts_with_same_highest_score:
-        # The original just takes [0]. Which one depends on iteration order.
-        # To make it somewhat deterministic, sort them.
-        texts_with_highest_feature_score.sort()
-        text_output = (
-            texts_with_highest_feature_score[0]
-            if texts_with_highest_feature_score
-            else ""
-        )
+        # Original TS just took [0]. Sorting makes it deterministic if multiple have same score.
+        text_output = final_texts_with_highest_score[0]
     else:
-        # Sort before joining for deterministic output
-        texts_with_highest_feature_score.sort()
-        text_output = " ".join(s.strip() for s in texts_with_highest_feature_score)
+        # Join sorted texts for deterministic concatenated output
+        text_output = " ".join(s.strip() for s in final_texts_with_highest_score)
 
-    return text_output.strip(), text_scores
+    return text_output.strip(), text_scores_computed

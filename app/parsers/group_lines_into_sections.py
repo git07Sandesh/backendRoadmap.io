@@ -2,115 +2,181 @@ import re
 from app.parsers.types import Lines, Line, ResumeKey, ResumeSectionToLinesMap
 from app.parsers.extract_resume_from_sections.lib.common_features import (
     is_bold,
-    has_letter_and_is_all_upper_case,
+    has_letter_and_is_all_upper_case,  # This needs to be robust
     has_only_letters_spaces_ampersands,
+    has_letter,
 )
 
-PROFILE_SECTION: ResumeKey = "profile"  # Using a simple string for ResumeKey
+PROFILE_SECTION: ResumeKey = "profile"
 
-SECTION_TITLE_PRIMARY_KEYWORDS = [
+SECTION_TITLE_KEYWORDS_ORDERED = [
+    "work and research experience",
+    "professional experience",
+    "work experience",
+    "research experience",
+    "experience",
+    "employment history",
+    "education",
+    "academic background",
+    "projects",
+    "personal projects",
+    "portfolio",
+    "publications",
+    "technical skills",
+    "skills",
+    "competencies",
+    "summary",
+    "professional summary",
+    "career objective",
+    "objective",
+    "awards and honors",
+    "extracurricular activities",
+    "volunteer experience",
+    "contact",
+    "contact information",
+]
+# Shorter, more generic parts that might appear in titles (used carefully)
+SECTION_KEY_FRAGMENTS = [
     "experience",
     "education",
     "project",
     "skill",
-]
-SECTION_TITLE_SECONDARY_KEYWORDS = [
-    "job",
-    "course",
-    "extracurricular",
-    "objective",
     "summary",
+    "objective",
     "award",
-    "honor",  # "project" is already primary
+    "publication",
+    "contact",
 ]
-SECTION_TITLE_KEYWORDS = (
-    SECTION_TITLE_PRIMARY_KEYWORDS + SECTION_TITLE_SECONDARY_KEYWORDS
-)
 
 
-def is_section_title(line: Line, line_number: int) -> bool:
-    is_first_two_lines = line_number < 2
-    has_more_than_one_item_in_line = len(line) > 1
-    has_no_item_in_line = len(line) == 0
-    if is_first_two_lines or has_more_than_one_item_in_line or has_no_item_in_line:
+def is_line_a_strong_section_title(line_obj: Line, line_number: int) -> bool:
+    if not line_obj or len(line_obj) != 1:  # Title must be the only item on its line
         return False
 
-    text_item = line[0]
+    text_item = line_obj[0]
     text_content = text_item.text.strip()
+    text_lower = text_content.lower()
 
-    if is_bold(text_item) and has_letter_and_is_all_upper_case(text_item):
-        # Additional check: ensure it's not just a few uppercase acronym, e.g. "GPA"
-        # A simple check is if it has at least one space OR is a known section keyword
+    if not text_content or not has_letter(text_item):  # Must have letters
+        return False
+
+    # Rule 1: Exact or very close match to comprehensive keyword list
+    for kw in SECTION_TITLE_KEYWORDS_ORDERED:
+        if kw == text_lower:
+            return True
+        # Allow for title like "EXPERIENCE" to match keyword "experience"
         if (
-            " " in text_content
-            or text_content.lower().replace(" ", "") in SECTION_TITLE_KEYWORDS
-        ):
+            text_lower.startswith(kw) and len(text_lower) < len(kw) + 6
+        ):  # Slightly longer than keyword
             return True
 
-    # Fallback heuristic
-    text_has_at_most_2_words = (
-        len([word for word in text_content.split(" ") if word != "&"]) <= 2
+    # Rule 2: Formatting - Bold AND (All Caps OR Title Case with few words)
+    is_all_caps_with_letters = has_letter_and_is_all_upper_case(text_item)
+    # Title Case: "Work Experience" - first letter of each word is upper, or "Work experience"
+    # A simple check for title case: starts with capital, and if multi-word, subsequent words also often start capital.
+    # For simplicity: if it starts with capital and is short.
+    is_potential_title_case = (
+        text_content[0].isupper() and len(text_content.split()) <= 3
     )
-    starts_with_capital_letter = bool(
-        re.match(r"^[A-Z]", text_content)
-    )  # Check if first char is capital
 
+    if is_bold(text_item) and (is_all_caps_with_letters or is_potential_title_case):
+        # And it's not excessively long (a single phrase)
+        if (
+            len(text_content.split()) <= 4 and len(text_content) > 2
+        ):  # 1-4 words, >2 chars
+            # And it contains some fragment of a known section type, or is a common short title.
+            if any(
+                frag in text_lower for frag in SECTION_KEY_FRAGMENTS
+            ) or text_content.upper() in ["SUMMARY", "OBJECTIVE", "PROFILE", "CONTACT"]:
+                return True
+
+    # Rule 3: All Caps (not necessarily bold), short, and contains keyword fragment
     if (
-        text_has_at_most_2_words
-        and has_only_letters_spaces_ampersands(text_item)
-        and starts_with_capital_letter
-        and any(keyword in text_content.lower() for keyword in SECTION_TITLE_KEYWORDS)
+        is_all_caps_with_letters
+        and not is_bold(text_item)
+        and len(text_content.split()) <= 3
+        and len(text_content) > 3
     ):
-        return True
+        if any(frag in text_lower for frag in SECTION_KEY_FRAGMENTS):
+            # And not too early in the doc (unless it's "PROFILE" or "CONTACT")
+            if line_number > 1 or text_content.upper() in [
+                "PROFILE",
+                "CONTACT",
+                "SUMMARY",
+                "OBJECTIVE",
+            ]:
+                return True
 
     return False
 
 
 def group_lines_into_sections(lines: Lines) -> ResumeSectionToLinesMap:
-    sections: ResumeSectionToLinesMap = {}
-    current_section_name: ResumeKey = PROFILE_SECTION
-    current_section_lines: Lines = []
+    sections_map: ResumeSectionToLinesMap = {
+        PROFILE_SECTION: []
+    }  # Initialize profile section
+    current_section_key: ResumeKey = PROFILE_SECTION
 
-    for i, line in enumerate(lines):
-        if not line:
-            continue  # Skip empty lines
+    if not lines:
+        return sections_map
 
-        # Try to get text of first item, if line is not empty
-        # A section title is assumed to be the only item on its line.
-        text = line[0].text.strip() if line else ""
+    # Accumulate lines for profile until the first explicit section title is found
+    profile_lines_buffer: Lines = []
+    first_real_section_found_idx = -1
 
-        if is_section_title(line, i):
-            # Sanitize section name for use as a key (lowercase, replace space with underscore)
-            # The original uses the text directly. Let's stick to that for now, but be mindful.
-            # For matching logic (e.g. getSectionLinesByKeywords), it's lowercased.
+    for i, line_obj in enumerate(lines):
+        if is_line_a_strong_section_title(line_obj, i):
+            first_real_section_found_idx = i
+            # The lines before this title belong to PROFILE_SECTION
+            sections_map[PROFILE_SECTION] = list(
+                profile_lines_buffer
+            )  # Finalize profile
 
-            # Store previous section
-            if current_section_name and current_section_lines:  # Ensure there's content
-                sections[current_section_name] = list(
-                    current_section_lines
-                )  # Make a copy
+            # Start the new section
+            current_section_key = line_obj[
+                0
+            ].text.strip()  # Use actual title text as key
+            sections_map[current_section_key] = []  # Initialize this new section
+            # The title line itself is not part of its content lines
+            break  # Exit this initial loop, proceed to process rest
+        else:
+            if line_obj:  # Add non-empty lines to profile buffer
+                profile_lines_buffer.append(line_obj)
+
+    # If no explicit sections were found after profile, all lines belong to profile
+    if first_real_section_found_idx == -1:
+        sections_map[PROFILE_SECTION] = list(
+            profile_lines_buffer
+        )  # All lines go to profile
+        return sections_map
+
+    # Continue processing from where the first real section title was found
+    # The title line itself (at first_real_section_found_idx) is skipped.
+    current_lines_for_section: Lines = []
+    for i in range(first_real_section_found_idx + 1, len(lines)):
+        line_obj = lines[i]
+        if is_line_a_strong_section_title(
+            line_obj, i
+        ):  # Pass 'i' for context if rule needs line_number
+            # Store previous section's lines
+            if (
+                current_section_key in sections_map
+            ):  # Should always be true after first section
+                sections_map[current_section_key].extend(current_lines_for_section)
+            else:  # Should not happen if logic is correct
+                sections_map[current_section_key] = list(current_lines_for_section)
 
             # Start new section
-            current_section_name = text  # Use the detected title as name
-            current_section_lines = []
+            current_section_key = line_obj[0].text.strip()
+            sections_map[current_section_key] = []  # Initialize new section
+            current_lines_for_section = []
         else:
-            current_section_lines.append(line)
+            if line_obj:  # Add non-empty lines
+                current_lines_for_section.append(line_obj)
 
-    # Add the last section
-    if current_section_name and current_section_lines:
-        sections[current_section_name] = list(current_section_lines)
-    elif (
-        not sections.get(PROFILE_SECTION) and current_section_lines
-    ):  # If only profile section exists
-        sections[PROFILE_SECTION] = list(current_section_lines)
+    # Add lines for the very last section
+    if current_section_key in sections_map:
+        sections_map[current_section_key].extend(current_lines_for_section)
+    elif current_section_key:  # If it was a new key not yet in map (should be rare)
+        sections_map[current_section_key] = list(current_lines_for_section)
 
-    # Ensure profile section exists, even if empty, if no other sections were found
-    # and it's the default.
-    if PROFILE_SECTION not in sections and not sections:  # If sections is empty
-        sections[PROFILE_SECTION] = (
-            current_section_lines  # Add whatever was last collected
-        )
-    elif PROFILE_SECTION not in sections and current_section_name == PROFILE_SECTION:
-        sections[PROFILE_SECTION] = current_section_lines
-
-    return sections
+    return sections_map
