@@ -1,43 +1,56 @@
-from fastapi import FastAPI
-from .routers import resume as resume_router  # Corrected import
-from .config import (
-    settings,
-)  # Import settings to ensure it's loaded, though not directly used here often
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+import traceback  # For detailed error logging
 
-app = FastAPI(title="Resume Parser API")
+from app.models import Resume  # Pydantic model for response
+from app.parsers import parse_resume_from_pdf_stream  # Main parsing function
 
-# Include routers
-app.include_router(resume_router.router, prefix="/resume", tags=["resume"])
+app = FastAPI(
+    title="OpenResume Heuristic Parser API",
+    description="FastAPI backend to parse resumes from PDF files using translated heuristic logic.",
+    version="1.0.0",
+)
+
+
+@app.post("/parse-resume/", response_model=Resume)
+async def parse_resume_endpoint(file: UploadFile = File(...)):
+    """
+    Upload a resume PDF file and get the parsed structured data.
+    """
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400, detail="Invalid file type. Only PDF files are accepted."
+        )
+
+    try:
+        # PyMuPDF needs bytes, so read the file content
+        pdf_bytes = await file.read()
+
+        # Use BytesIO to treat bytes as a file-like object for PyMuPDF
+        import io
+
+        pdf_stream = io.BytesIO(pdf_bytes)
+
+        parsed_resume = parse_resume_from_pdf_stream(pdf_stream)
+        return parsed_resume
+    except Exception as e:
+        print(f"Error processing file {file.filename}: {e}")
+        traceback.print_exc()  # Print full traceback to console for debugging
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while parsing the resume: {str(e)}",
+        )
 
 
 @app.get("/")
 async def root():
     return {
-        "message": "Welcome to the Resume Parser API. Go to /docs for API documentation."
+        "message": "Resume Parser API is running. Use the /parse-resume/ endpoint to upload a PDF."
     }
-
-
-# The if __name__ == "__main__": block is tricky with relative imports if you run this file directly.
-# It's better to run FastAPI apps using Uvicorn from the project root directory.
-# Example: uvicorn app.main:app --reload from c:\Users\rajka\backendRoadmap.io
-#
-# If you still want to run it directly for some reason (e.g. simple testing without full project structure in PYTHONPATH):
-# import sys
-# import os
-# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # To run this directly, you might need to adjust PYTHONPATH or run as a module
-    # For simplicity, assuming you run from the root with `python -m app.main` or use uvicorn
-    print("Running Uvicorn. Navigate to http://127.0.0.1:8000")
-    print("For API docs, go to http://127.0.0.1:8000/docs")
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True, workers=1)
-
-# To run the application:
-# 1. Ensure your conda environment 'clusterpath' is activated.
-# 2. Ensure .env file is in the root directory (c:\Users\rajka\backendRoadmap.io) with SUPABASE_URL and SUPABASE_KEY.
-# 3. From the root directory (c:\Users\rajka\backendRoadmap.io), run:
-#    uvicorn app.main:app --reload
+    # For development, run with: uvicorn app.main:app --reload
+    uvicorn.run(app, host="0.0.0.0", port=8000)

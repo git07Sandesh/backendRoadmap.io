@@ -1,7 +1,6 @@
 fastapi
 uvicorn[standard]
-supabase
 PyMuPDF
-python-docx
-spacy
+pydantic
+supabase
 python-multipart
