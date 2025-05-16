@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware  # Add this import
 import traceback  # For detailed error logging
 
 from app.models import Resume  # Pydantic model for response
@@ -9,6 +10,15 @@ app = FastAPI(
     title="OpenResume Heuristic Parser API",
     description="FastAPI backend to parse resumes from PDF files using translated heuristic logic.",
     version="1.0.0",
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
 )
 
 
