@@ -64,3 +64,6 @@ if __name__ == "__main__":
 
     # For development, run with: uvicorn app.main:app --reload
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# virtual env - clusterpath
