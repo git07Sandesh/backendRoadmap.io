@@ -52,14 +52,12 @@ class ResumeCustom(BaseModel):
 class Resume(BaseModel):
     profile: ResumeProfile = Field(default_factory=ResumeProfile)
     work_experiences: List[ResumeWorkExperience] = Field(
-        alias="workExperiences", default_factory=lambda: [ResumeWorkExperience()]
+        alias="workExperiences", default_factory=list
     )
-    educations: List[ResumeEducation] = Field(
-        default_factory=lambda: [ResumeEducation()]
-    )
-    projects: List[ResumeProject] = Field(default_factory=lambda: [ResumeProject()])
+    educations: List[ResumeEducation] = Field(default_factory=list)
+    projects: List[ResumeProject] = Field(default_factory=list)
     skills: ResumeSkills = Field(default_factory=ResumeSkills)
-    custom: ResumeCustom = Field(default_factory=ResumeCustom)
+    custom: Dict[str, ResumeCustom] = Field(default_factory=dict)
 
     class Config:
         populate_by_name = True  # Allows using job_title and featured_skills
@@ -112,3 +110,9 @@ class TextScore(BaseModel):
 TextScores = List[TextScore]
 # FeatureSet will be represented as tuples in Python:
 # [(callable, score)] or [(callable_returning_match_obj, score, return_matching_text_only_bool)]
+
+
+# Pydantic model for the learning question request
+class LearningQuestionRequest(BaseModel):
+    prompt: str
+    prompt: str
