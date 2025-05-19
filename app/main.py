@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import routers
-from app.routers import resume, insights
+from app.routers import resume, insights, tagExtraction
+
 
 app = FastAPI(
     title="API",
@@ -27,6 +28,7 @@ app.add_middleware(
 # You can choose a prefix, e.g., "/api/v1", for versioning or grouping
 app.include_router(resume.router, prefix="/api/v1", tags=["Resume Parsing"])
 app.include_router(insights.router, prefix="/api/v1", tags=["Learning Insights"])
+app.include_router(tagExtraction.router, prefix="/api/v1", tags=["Tag Extraction"])
 
 
 @app.get("/")
