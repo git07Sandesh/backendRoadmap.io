@@ -6,3 +6,11 @@ supabase
 python-multipart
 google-genai
 python-dotenv
+torch==2.2.2
+transformers==4.41.0
+sentence-transformers==2.6.1
+keybert==0.8.3
+
+# Optional: common utils
+scikit-learn==1.4.2
+numpy==1.26.4
