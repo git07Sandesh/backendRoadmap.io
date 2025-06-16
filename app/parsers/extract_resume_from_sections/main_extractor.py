@@ -35,5 +35,5 @@ def extract_resume_from_sections(sections: ResumeSectionToLinesMap) -> Resume:
         workExperiences=work_experiences_data,  # Alias handled by Pydantic
         projects=projects_data,
         skills=skills_data,
-        custom=ResumeCustom(descriptions=[]),  # Default empty custom section
+        custom={},  # Empty dictionary as custom expects Dict[str, ResumeCustom]
     )
