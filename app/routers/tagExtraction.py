@@ -117,7 +117,10 @@ def auto_tag_and_predict(resume: ResumeInput):
     top_k = 300
     top_indices = torch.topk(similarities, k=top_k).indices.tolist()
     job_logits = {
-        job_titles[i]: float(similarities[i])
+        job_titles[i]:{
+            "score": float(similarities[i]),
+            "description": JOB_DESCRIPTIONS[job_titles[i]],
+        }
         for i in top_indices
     }
 

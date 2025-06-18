@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import routers
-from app.routers import resume, insights, tagExtraction
+from app.routers import resume, insights, tagExtraction, roadmap
 
 app = FastAPI(
     title="API",
@@ -26,11 +26,12 @@ app.add_middleware(
 app.include_router(resume.router, prefix="/api/v1", tags=["Resume Parsing"])
 app.include_router(insights.router, prefix="/api/v1", tags=["Learning Insights"])
 app.include_router(tagExtraction.router, prefix="/api/v1", tags=["Tag Extraction"])
+app.include_router(roadmap.router, prefix="/api/v1", tags=["Roadmap Generation"])
 
 @app.get("/")
 async def root():
     return {"message": "Resume Parser API is running. Use endpoints under /api/v1/"}
-
+#uvicorn app.main:app --reload
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)

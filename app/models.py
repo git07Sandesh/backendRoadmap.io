@@ -116,3 +116,7 @@ TextScores = List[TextScore]
 class LearningQuestionRequest(BaseModel):
     prompt: str
     prompt: str
+
+class JobMatchInput(BaseModel):
+    tags: List[str]
+    top_k: int = 5  # Optional, default top 5 jobs

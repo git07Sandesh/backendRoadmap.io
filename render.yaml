@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: fastapi-ml-backend
+    env: python
+    region: oregon  # or frankfurt, etc.
+    plan: free
+    buildCommand: ""
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    runtime: python
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
+      - key: GOOGLE_API_KEY
+        value: YOUR_KEY_HERE
+      - key: SUPABASE_URL
+        value: YOUR_SUPABASE_URL
+      - key: SUPABASE_KEY
+        value: YOUR_SUPABASE_KEY
