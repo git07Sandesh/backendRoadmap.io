@@ -1,8 +1,8 @@
-from dotenv import load_dotenv  # Load environment variables
-load_dotenv()
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Import routers
 from app.routers import resume, insights, tagExtraction, roadmap
@@ -13,7 +13,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(resume.router, prefix="/api/v1", tags=["Resume Parsing"])
 app.include_router(insights.router, prefix="/api/v1", tags=["Learning Insights"])
 app.include_router(tagExtraction.router, prefix="/api/v1", tags=["Tag Extraction"])
@@ -31,7 +29,9 @@ app.include_router(roadmap.router, prefix="/api/v1", tags=["Roadmap Generation"]
 @app.get("/")
 async def root():
     return {"message": "Resume Parser API is running. Use endpoints under /api/v1/"}
-#uvicorn app.main:app --reload
+
+
+# ✅ Local development runner
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
