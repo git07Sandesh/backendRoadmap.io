@@ -1,24 +1,21 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Union
-import torch
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.util import cos_sim
-from keybert import KeyBERT
-from app.data.job_description import JOB_DESCRIPTIONS
+import yake
+from supabase import create_client
+import os
+from dotenv import load_dotenv
 
-
+load_dotenv()
 router = APIRouter()
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-kw_model = KeyBERT(model=embedding_model)
+# === Supabase Client ===
+supabase = create_client(os.getenv("supabase_url"), os.getenv("supabase_key"))
 
-# Job description corpus
+# === YAKE Keyword Extractor ===
+kw_extractor = yake.KeywordExtractor(lan="en", n=3, top=5, dedupLim=0.7)
 
-job_titles = list(JOB_DESCRIPTIONS.keys())
-job_texts = list(JOB_DESCRIPTIONS.values())
-job_embeddings = embedding_model.encode(job_texts, convert_to_tensor=True)
-
+# === Pydantic Models ===
 class FeaturedSkill(BaseModel):
     skill: str
     rating: int
@@ -35,21 +32,29 @@ class TaggedItem(BaseModel):
     title: str
     tags: List[str]
 
-class TagStructureInput(BaseModel):
-    profile: List[str] = []
-    skills: List[str] = []
-    projects: List[TaggedItem] = []
-    workExperiences: List[TaggedItem] = []
-    educations: List[TaggedItem] = []
-    custom: List[str] = []
 
-class JobMatchInput(BaseModel):
-    tags: List[str]
-    top_k: int = 3
+import google.generativeai as genai
 
+# Initialize Gemini client
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+embedding_model = genai.get_model("models/embedding-001")
+
+def get_embedding(text: str) -> list[float]:
+    try:
+        response = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="RETRIEVAL_DOCUMENT",
+            title="Resume Tags"
+        )
+        return response["embedding"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini error: {str(e)}")
+
+
+# === Main Endpoint ===
 @router.post("/auto-job-predict")
 def auto_tag_and_predict(resume: ResumeInput):
-    # === Step 1: Extract Tags === #
     tag_output = {
         "profile": [],
         "projects": [],
@@ -62,13 +67,7 @@ def auto_tag_and_predict(resume: ResumeInput):
     def extract_from_text(text: str) -> List[str]:
         if not text or not isinstance(text, str):
             return []
-        keywords = kw_model.extract_keywords(
-            text,
-            keyphrase_ngram_range=(1, 3),
-            stop_words="english",
-            top_n=5
-        )
-        return [kw[0] for kw in keywords]
+        return [kw[0] for kw in kw_extractor.extract_keywords(text)]
 
     if resume.profile:
         tag_output["profile"].extend(extract_from_text(resume.profile.get("summary", "")))
@@ -96,36 +95,35 @@ def auto_tag_and_predict(resume: ResumeInput):
                 for item in v:
                     tag_output["custom"].extend(extract_from_text(item))
 
-    # === Step 2: Flatten Tags === #
-    flat_tags = []
-    flat_tags.extend(tag_output["profile"])
-    flat_tags.extend(tag_output["skills"])
-    for group in ["projects", "workExperiences", "educations"]:
-        for item in tag_output[group]:
-            flat_tags.extend(item.get("tags", []))
-    flat_tags.extend(tag_output["custom"])
-    flat_tags = list(set(tag for tag in flat_tags if tag.strip()))
+    # === Flatten Tags ===
+    flat_tags = list(set([
+        *tag_output["profile"],
+        *tag_output["skills"],
+        *[t for item in tag_output["projects"] for t in item["tags"]],
+        *[t for item in tag_output["workExperiences"] for t in item["tags"]],
+        *[t for item in tag_output["educations"] for t in item["tags"]],
+        *tag_output["custom"]
+    ]))
 
-    # === Step 3: Predict Jobs === #
     if not flat_tags:
         raise HTTPException(status_code=400, detail="No tags extracted from resume.")
 
+    # === Supabase Vector Matching ===
     tag_text = " ".join(flat_tags)
-    tag_embedding = embedding_model.encode(tag_text, convert_to_tensor=True)
-    similarities = cos_sim(tag_embedding, job_embeddings)[0]
+    embedding_vector = get_embedding(tag_text)
 
-    top_k = 300
-    top_indices = torch.topk(similarities, k=top_k).indices.tolist()
-    job_logits = {
-        job_titles[i]:{
-            "score": float(similarities[i]),
-            "description": JOB_DESCRIPTIONS[job_titles[i]],
-        }
-        for i in top_indices
-    }
+    try:
+        embedding_response = supabase.rpc("match_jobs_from_text", {
+            "input_embedding": embedding_vector,
+            "top_k": 300
+        }).execute()
+        matched_jobs = embedding_response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
 
+        
     return {
         "tags_by_section": tag_output,
         "flattened_tags": flat_tags,
-        "job_logits": job_logits
+        "job_logits": matched_jobs
     }
