@@ -1,16 +1,14 @@
 #!/bin/bash
 
-# Create venv if not exists
-if [ ! -d "antenv" ]; then
-  python3 -m venv antenv
-fi
+echo "▶️ Running startup.sh..."
 
-# Activate it
+# Activate Python virtual env if needed (optional)
+python3 -m venv antenv
 source antenv/bin/activate
 
-# Install dependencies
+echo "📦 Installing requirements..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Start your app
-uvicorn app.main:app --host=0.0.0.0 --port=8000
+echo "🚀 Starting uvicorn..."
+exec uvicorn app.main:app --host=0.0.0.0 --port=8000
