@@ -352,7 +352,7 @@ JOB_DESCRIPTIONS = {
     "Woodworker": "Manufacture wood products like cabinets and furniture.",
 
     #Healtcare jobs:
-    "Acupuncturist": "Treat patients by inserting thin needles into specific points on the body to relieve pain, treat diseases, and promote general health.",
+  "Acupuncturist": "Treat patients by inserting thin needles into specific points on the body to relieve pain, treat diseases, and promote general health.",
   "Anesthesiologist": "Administer anesthetics before, during, or after surgery or other medical procedures. Monitor patient's vital signs and manage their pain and level of consciousness throughout the surgical experience.",
   "Anesthesiologist Assistant": "Assist anesthesiologists in developing and implementing anesthesia care plans. Perform pre-operative patient assessments and operate anesthesia equipment under the supervision of a physician.",
   "Athletic Trainer": "Specialize in preventing, diagnosing, and treating muscle and bone injuries and illnesses. Apply protective devices, provide first aid, and develop rehabilitation programs for injured athletes.",
