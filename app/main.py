@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from app.routers import resume, insights, tagExtraction, roadmap
+from app.routers import resume, insights, tagExtraction, roadmap, user_resume
 
 app = FastAPI(
     title="API",
@@ -25,6 +25,8 @@ app.include_router(resume.router, prefix="/api/v1", tags=["Resume Parsing"])
 app.include_router(insights.router, prefix="/api/v1", tags=["Learning Insights"])
 app.include_router(tagExtraction.router, prefix="/api/v1", tags=["Tag Extraction"])
 app.include_router(roadmap.router, prefix="/api/v1", tags=["Roadmap Generation"])
+app.include_router(user_resume.router, prefix="/api/v1", tags=["User Resume Storage"])
+
 
 @app.get("/")
 async def root():
@@ -34,4 +36,5 @@ async def root():
 # ✅ Local development runner
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

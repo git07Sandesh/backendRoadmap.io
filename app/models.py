@@ -117,6 +117,69 @@ class LearningQuestionRequest(BaseModel):
     prompt: str
     prompt: str
 
+
 class JobMatchInput(BaseModel):
     tags: List[str]
     top_k: int = 5  # Optional, default top 5 jobs
+
+
+# New models for user resume storage
+class UserResumeData(BaseModel):
+    user_id: str
+    resume: Resume
+
+
+class UserResumeStorage(BaseModel):
+    user_id: str
+    resume_data: dict
+    education_embedding: Optional[List[float]] = None
+    work_experience_embedding: Optional[List[float]] = None
+    projects_embedding: Optional[List[float]] = None
+    skills_embedding: Optional[List[float]] = None
+    full_resume_embedding: Optional[List[float]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ResumeStorageResponse(BaseModel):
+    success: bool
+    message: str
+    user_id: str
+    embeddings_generated: Dict[str, bool]
+
+
+# New models for structured user resume storage
+class StructuredUserResumeStorage(BaseModel):
+    user_id: str
+    # Profile data
+    profile_name: Optional[str] = None
+    profile_email: Optional[str] = None
+    profile_phone: Optional[str] = None
+    profile_url: Optional[str] = None
+    profile_summary: Optional[str] = None
+    profile_location: Optional[str] = None
+
+    # Structured data as JSON columns
+    work_experiences: Optional[List[dict]] = None
+    educations: Optional[List[dict]] = None
+    projects: Optional[List[dict]] = None
+    skills: Optional[dict] = None
+    custom: Optional[dict] = None
+
+    # Embeddings
+    education_embedding: Optional[List[float]] = None
+    work_experience_embedding: Optional[List[float]] = None
+    projects_embedding: Optional[List[float]] = None
+    skills_embedding: Optional[List[float]] = None
+    full_resume_embedding: Optional[List[float]] = None
+
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class StructuredResumeStorageResponse(BaseModel):
+    success: bool
+    message: str
+    user_id: str
+    embeddings_generated: Dict[str, bool]
+    data_id: Optional[str] = None
