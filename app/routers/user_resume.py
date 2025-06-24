@@ -230,7 +230,11 @@ async def store_user_resume(user_resume: UserResumeData):
         }
 
         # Execute upsert and check for errors
-        result = supabase.table("user_resumes").upsert(resume_data).execute()
+        result = (
+            supabase.table("user_resumes")
+            .upsert(resume_data, on_conflict="user_id")
+            .execute()
+        )
         if hasattr(result, "error") and result.error:
             logger.error(f"Supabase upsert error: {result.error}")
             # Raise HTTPException with detailed Supabase error
@@ -393,7 +397,9 @@ async def store_structured_resume(user_resume: UserResumeData):
 
         # Store in Supabase (upsert to handle updates)
         result = (
-            supabase.table("structured_user_resumes").upsert(structured_data).execute()
+            supabase.table("structured_user_resumes")
+            .upsert(structured_data, on_conflict="user_id")
+            .execute()
         )
 
         if not result.data:
