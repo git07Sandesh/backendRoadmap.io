@@ -21,8 +21,8 @@ load_dotenv()
 router = APIRouter()
 
 # Validate environment variables
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
+supabase_url = os.getenv("supabase_url")
+supabase_key = os.getenv("supabase_key")
 gemini_key = os.getenv("GEMINI_API_KEY")
 if not supabase_url or not supabase_key:
     logger.error(

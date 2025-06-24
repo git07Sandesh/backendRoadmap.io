@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from app.routers import resume, insights, tagExtraction, roadmap, user_resume
+from app.routers import resume, insights, tagExtraction, roadmap, user_resume, resume_clustering
 
 app = FastAPI(
     title="API",
@@ -26,6 +26,7 @@ app.include_router(insights.router, prefix="/api/v1", tags=["Learning Insights"]
 app.include_router(tagExtraction.router, prefix="/api/v1", tags=["Tag Extraction"])
 app.include_router(roadmap.router, prefix="/api/v1", tags=["Roadmap Generation"])
 app.include_router(user_resume.router, prefix="/api/v1", tags=["User Resume Storage"])
+app.include_router(resume_clustering.router, prefix="/api/v1", tags=["Resume Clustering"])
 
 
 @app.get("/")
