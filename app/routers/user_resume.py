@@ -365,27 +365,11 @@ async def store_structured_resume(user_resume: UserResumeData):
             full_embedding = get_embedding(full_text)
             embeddings_generated["full_resume"] = True
 
-        # Extract profile data for individual columns
-        profile = resume_dict.get("profile", {})
-
-        # Prepare structured data for Supabase
+        # Prepare data for Supabase to match the 'user_resumes' table schema
         current_time = datetime.utcnow().isoformat()
-        structured_data = {
+        resume_data_for_upsert = {
             "user_id": user_resume.user_id,
-            # Profile columns
-            "profile_name": profile.get("name"),
-            "profile_email": profile.get("email"),
-            "profile_phone": profile.get("phone"),
-            "profile_url": profile.get("url"),
-            "profile_summary": profile.get("summary"),
-            "profile_location": profile.get("location"),
-            # Structured JSON columns
-            "work_experiences": resume_dict.get("workExperiences", []),
-            "educations": resume_dict.get("educations", []),
-            "projects": resume_dict.get("projects", []),
-            "skills": resume_dict.get("skills", {}),
-            "custom": resume_dict.get("custom", {}),
-            # Embeddings
+            "resume_data": resume_dict,
             "education_embedding": education_embedding,
             "work_experience_embedding": work_embedding,
             "projects_embedding": projects_embedding,
@@ -397,8 +381,8 @@ async def store_structured_resume(user_resume: UserResumeData):
 
         # Store in Supabase (upsert to handle updates)
         result = (
-            supabase.table("structured_user_resumes")
-            .upsert(structured_data, on_conflict="user_id")
+            supabase.table("user_resumes")
+            .upsert(resume_data_for_upsert, on_conflict="user_id")
             .execute()
         )
 
@@ -407,12 +391,36 @@ async def store_structured_resume(user_resume: UserResumeData):
                 status_code=500, detail="Failed to store structured resume in database"
             )
 
+        # ---- NEW: Trigger job matching after storing resume ----
+        if full_embedding:
+            try:
+                supabase.rpc(
+                    "calculate_and_store_job_matches",
+                    {
+                        "p_user_id": user_resume.user_id,
+                        "p_user_embedding": full_embedding,
+                    },
+                ).execute()
+                logger.info(
+                    f"Successfully calculated job matches for user {user_resume.user_id}"
+                )
+            except Exception as rpc_error:
+                # Log the error but don't fail the main request
+                logger.error(
+                    f"Failed to calculate job matches for user {user_resume.user_id}: {rpc_error}"
+                )
+        # ---- END NEW SECTION ----
+
         return StructuredResumeStorageResponse(
             success=True,
             message="Structured resume stored successfully with embeddings",
             user_id=user_resume.user_id,
             embeddings_generated=embeddings_generated,
-            data_id=result.data[0].get("id") if result.data else None,
+            data_id=(
+                str(result.data[0].get("id"))
+                if result.data and result.data[0].get("id") is not None
+                else None
+            ),
         )
 
     except HTTPException as e:
@@ -431,37 +439,20 @@ async def get_structured_resume(user_id: str):
     """
     try:
         result = (
-            supabase.table("structured_user_resumes")
-            .select("*")
-            .eq("user_id", user_id)
-            .execute()
+            supabase.table("user_resumes").select("*").eq("user_id", user_id).execute()
         )
 
         if not result.data:
             raise HTTPException(
-                status_code=404, detail="Structured resume not found for this user"
+                status_code=404, detail="Resume not found for this user"
             )
 
         data = result.data[0]
 
-        # Reconstruct the original resume format
+        # Reconstruct the response from the user_resumes table format
         reconstructed_resume = {
             "user_id": data["user_id"],
-            "resume": {
-                "profile": {
-                    "name": data.get("profile_name", ""),
-                    "email": data.get("profile_email", ""),
-                    "phone": data.get("profile_phone", ""),
-                    "url": data.get("profile_url", ""),
-                    "summary": data.get("profile_summary", ""),
-                    "location": data.get("profile_location", ""),
-                },
-                "workExperiences": data.get("work_experiences", []),
-                "educations": data.get("educations", []),
-                "projects": data.get("projects", []),
-                "skills": data.get("skills", {}),
-                "custom": data.get("custom", {}),
-            },
+            "resume": data.get("resume_data", {}),
             "metadata": {
                 "created_at": data.get("created_at"),
                 "updated_at": data.get("updated_at"),
@@ -494,10 +485,7 @@ async def delete_structured_resume(user_id: str):
     """
     try:
         result = (
-            supabase.table("structured_user_resumes")
-            .delete()
-            .eq("user_id", user_id)
-            .execute()
+            supabase.table("user_resumes").delete().eq("user_id", user_id).execute()
         )
 
         return {
@@ -543,4 +531,72 @@ async def search_resumes_by_skills(query: str, limit: int = 10):
         raise HTTPException(
             status_code=500,
             detail=f"An error occurred while searching resumes: {str(e)}",
+        )
+
+
+@router.get("/jobs/{job_id}/top-users")
+async def get_top_users_for_job(
+    job_id: int, current_user_id: Optional[str] = None, limit: int = 10
+):
+    """
+    Get the top matching users for a specific job title.
+    If a current_user_id is provided, their score is also returned for comparison.
+    """
+    try:
+        # 1. Fetch the top N users for the job
+        top_users_result = (
+            supabase.table("user_job_match")
+            .select("user_id, similarity_score")
+            .eq("job_id", job_id)
+            .order("similarity_score", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        top_matches = top_users_result.data or []
+
+        # 2. If a current_user_id is provided, fetch their specific score
+        user_match = None
+        if current_user_id:
+            user_match_result = (
+                supabase.table("user_job_match")
+                .select("user_id, similarity_score")
+                .eq("job_id", job_id)
+                .eq("user_id", current_user_id)
+                .maybe_single()  # Use maybe_single to avoid errors if no match exists
+                .execute()
+            )
+            user_match = user_match_result.data
+
+        return {
+            "success": True,
+            "top_matches": top_matches,
+            "user_match": user_match,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while fetching top users: {str(e)}",
+        )
+
+
+@router.get("/users/{user_id}/top-jobs")
+async def get_top_jobs_for_user(user_id: str, limit: int = 10):
+    """
+    Get the top matching job titles for a specific user.
+    """
+    try:
+        # We need to join with job_embeddings to get the job_title
+        result = (
+            supabase.table("user_job_match")
+            .select("similarity_score, job_embeddings(job_title, description)")
+            .eq("user_id", user_id)
+            .order("similarity_score", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return {"success": True, "matches": result.data}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while fetching top jobs: {str(e)}",
         )
