@@ -164,3 +164,45 @@ def trigger_clustering(request: ClusteringRequest):
         return {"status": "success", "message": "Clusters generated and user mappings updated."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/cluster-graph/{user_id}")
+def get_cluster_graph(user_id: str):
+    # 1. Get all cluster_ids this user is in
+    user_clusters = supabase.table("user_cluster_map").select("cluster_id").eq("user_id", user_id).execute().data
+    cluster_ids = [uc["cluster_id"] for uc in user_clusters]
+
+    if not cluster_ids:
+        return {"name": "root", "children": []}
+
+    # 2. Fetch cluster names
+    clusters = supabase.table("cluster_definitions").select("cluster_id, name").in_("cluster_id", cluster_ids).execute().data
+    cluster_name_map = {c["cluster_id"]: c["name"] for c in clusters}
+
+    # 3. Fetch all users in those clusters
+    all_entries = supabase.table("user_cluster_map").select("user_id, cluster_id, similarity_score").in_("cluster_id", cluster_ids).execute().data
+
+    # 4. Group by cluster_id
+    cluster_tree = {}
+    for entry in all_entries:
+        cid = entry["cluster_id"]
+        if cid not in cluster_tree:
+            cluster_tree[cid] = []
+        cluster_tree[cid].append({
+            "name": entry["user_id"][:6],  # short user_id
+            "value": round(entry["similarity_score"], 2)
+        })
+
+    # 5. Format for circle packing
+    result = {
+        "name": "root",
+        "children": [
+            {
+                "name": cluster_name_map[cid],
+                "children": cluster_tree[cid]
+            }
+            for cid in cluster_ids if cid in cluster_tree
+        ]
+    }
+
+    return result
+
