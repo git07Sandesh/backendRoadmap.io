@@ -534,69 +534,63 @@ async def search_resumes_by_skills(query: str, limit: int = 10):
         )
 
 
-@router.get("/jobs/{job_id}/top-users")
-async def get_top_users_for_job(
-    job_id: int, current_user_id: Optional[str] = None, limit: int = 10
-):
-    """
-    Get the top matching users for a specific job title.
-    If a current_user_id is provided, their score is also returned for comparison.
-    """
+@router.get("/user/{user_id}/job-circle-graph")
+async def get_zoomable_job_user_tree(user_id: str, job_limit: int = 10, user_limit: int = 10):
     try:
-        # 1. Fetch the top N users for the job
-        top_users_result = (
+        jobs_result = (
             supabase.table("user_job_match")
-            .select("user_id, similarity_score")
-            .eq("job_id", job_id)
+            .select("job_id, similarity_score, job_embeddings(job_title)")
+            .eq("user_id", user_id)
             .order("similarity_score", desc=True)
-            .limit(limit)
+            .limit(job_limit)
             .execute()
         )
-        top_matches = top_users_result.data or []
 
-        # 2. If a current_user_id is provided, fetch their specific score
-        user_match = None
-        if current_user_id:
-            user_match_result = (
+        if not jobs_result.data:
+            return {"name": "Top Jobs", "children": []}
+
+        root_children = []
+
+        for job in jobs_result.data:
+            job_id = job["job_id"]
+            job_title = job["job_embeddings"]["job_title"]
+
+            # Get top users for this job
+            users_result = (
                 supabase.table("user_job_match")
                 .select("user_id, similarity_score")
                 .eq("job_id", job_id)
-                .eq("user_id", current_user_id)
-                .maybe_single()  # Use maybe_single to avoid errors if no match exists
+                .order("similarity_score", desc=True)
+                .limit(user_limit)
                 .execute()
             )
-            user_match = user_match_result.data
+
+            user_children = [
+                {
+                    "name": f"User {user['user_id'][:8]}",
+                    "value": round(user["similarity_score"], 4)
+                }
+                for user in users_result.data
+            ]
+
+            # Compute average similarity to use as job node value
+            job_avg_value = (
+                round(sum(child["value"] for child in user_children) / len(user_children), 4)
+                if user_children else 0.0
+            )
+
+            job_node = {
+                "name": job_title,
+                "value": job_avg_value,  # ⬅️ this is what was missing
+                "children": user_children
+            }
+
+            root_children.append(job_node)
 
         return {
-            "success": True,
-            "top_matches": top_matches,
-            "user_match": user_match,
+            "name": f"User {user_id[:8]} Top Jobs",
+            "children": root_children
         }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"An error occurred while fetching top users: {str(e)}",
-        )
 
-
-@router.get("/users/{user_id}/top-jobs")
-async def get_top_jobs_for_user(user_id: str, limit: int = 10):
-    """
-    Get the top matching job titles for a specific user.
-    """
-    try:
-        # We need to join with job_embeddings to get the job_title
-        result = (
-            supabase.table("user_job_match")
-            .select("similarity_score, job_embeddings(job_title, description)")
-            .eq("user_id", user_id)
-            .order("similarity_score", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return {"success": True, "matches": result.data}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"An error occurred while fetching top jobs: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Error building graph: {str(e)}")
