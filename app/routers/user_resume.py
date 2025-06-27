@@ -15,7 +15,32 @@ from app.models import (
     UserResumeData,
     ResumeStorageResponse,
     StructuredResumeStorageResponse,
+    ResumeEducation,
+    ResumeWorkExperience,
 )
+
+# --- ADD THESE MODELS HERE ---
+class ResumeProject(BaseModel):
+    project: str
+    date: Optional[str] = None
+    descriptions: List[str] = []
+
+class EducationMatch(BaseModel):
+    user_id: str
+    similarity: float
+    education: List[ResumeEducation]
+
+class WorkExperienceMatch(BaseModel):
+    user_id: str
+    similarity: float
+    work_experience: List[ResumeWorkExperience]
+
+class ProjectMatch(BaseModel):
+    user_id: str
+    similarity: float
+    projects: List[ResumeProject]
+# --- END OF ADDED MODELS ---
+
 
 load_dotenv()
 router = APIRouter()
@@ -594,5 +619,106 @@ async def get_zoomable_job_user_tree(user_id: str, job_limit: int = 10, user_lim
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error building graph: {str(e)}")
+
+
+@router.get("/users/{user_id}/top-jobs")
+async def get_top_jobs_for_user(user_id: str, limit: int = 10):
+    """
+    Get top job recommendations for a user based on their resume embeddings
+    """
+    try:
+        result = (
+            supabase.table("user_job_match")
+            .select("job_id, similarity_score, job_embeddings(job_title)")
+            .eq("user_id", user_id)
+            .order("similarity_score", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        if not result.data:
+            return {"success": True, "data": []}
+
+        return {
+            "success": True,
+            "data": [
+                {
+                    "job_id": job["job_id"],
+                    "similarity_score": job["similarity_score"],
+                    "job_title": job["job_embeddings"]["job_title"],
+                }
+                for job in result.data
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while fetching top jobs: {str(e)}",
+        )
+
+
+@router.get("/users/{user_id}/similar-education", response_model=List[EducationMatch])
+async def get_similar_education(user_id: str, limit: int = 5):
+    """
+    Finds users with the most similar education background.
+    """
+    try:
+        result = supabase.rpc(
+            "match_education_experiences",
+            {"p_user_id": user_id, "p_match_count": limit},
+        ).execute()
+
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Error finding similar education for {user_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="An error occurred while finding similar education."
+        )
+
+
+@router.get(
+    "/users/{user_id}/similar-work-experience",
+    response_model=List[WorkExperienceMatch],
+)
+async def get_similar_work_experience(user_id: str, limit: int = 5):
+    """
+    Finds users with the most similar work experience.
+    """
+    try:
+        result = supabase.rpc(
+            "match_work_experiences",
+            {"p_user_id": user_id, "p_match_count": limit},
+        ).execute()
+
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Error finding similar work experience for {user_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while finding similar work experience.",
+        )
+
+
+@router.get(
+    "/users/{user_id}/similar-projects",
+    response_model=List[ProjectMatch],
+)
+async def get_similar_projects(user_id: str, limit: int = 5):
+    """
+    Finds users with the most similar project experience.
+    """
+    try:
+        result = supabase.rpc(
+            "match_project_experiences",
+            {"p_user_id": user_id, "p_match_count": limit},
+        ).execute()
+
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Error finding similar projects for {user_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while finding similar projects.",
+        )
 
 
